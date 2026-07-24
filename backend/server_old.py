@@ -2,6 +2,7 @@ from fastapi import FastAPI, APIRouter, HTTPException, UploadFile, File, Depends
 from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
+from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import io
 import csv
@@ -14,420 +15,23 @@ from typing import List, Optional, Literal, Any, Dict
 import uuid
 from datetime import datetime, timezone, timedelta
 
-from database import SessionLocal, init_db
-from models import (
-    AppSettingORM,
-    BuyerORM,
-    CompanyORM,
-    FabricDispatchORM,
-    FabricLotORM,
-    OrderORM,
-    ProductTypeORM,
-    ProductionReturnORM,
-    UserORM,
-    VendorORM,
-)
+from database import init_db
 
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
-
-from sqlalchemy import func
-
-
-class SQLAlchemyCursor:
-    def __init__(self, model, query_filters: Optional[Dict[str, Any]] = None, projection: Optional[Dict[str, Any]] = None):
-        self.model = model
-        self.query_filters = query_filters or {}
-        self.projection = projection or {}
-        self._sort_fields: List[tuple[str, int]] = []
-
-    def sort(self, field: str, direction: int = 1):
-        self._sort_fields.append((field, direction))
-        return self
-
-    async def collect(self, limit: int = 1000):
-        with SessionLocal() as session:
-            query = session.query(self.model)
-            query = _apply_query_filters(query, self.model, self.query_filters)
-            for field, direction in self._sort_fields:
-                column = getattr(self.model, field, None)
-                if column is None:
-                    continue
-                query = query.order_by(column.desc() if direction < 0 else column.asc())
-            rows = query.limit(limit).all()
-            return [_apply_projection(_serialize_row(self.model, row), self.projection) for row in rows]
-
-    def __aiter__(self):
-        async def generator():
-            rows = await self.collect()
-            for item in rows:
-                yield item
-        return generator()
-
-
-class SQLAlchemyAggregation:
-    def __init__(self, rows):
-        self.rows = rows
-
-    async def collect(self, limit: int = 1000):
-        return self.rows[:limit]
-
-    def __aiter__(self):
-        async def generator():
-            for item in self.rows:
-                yield item
-        return generator()
-
-
-class SQLAlchemyCollection:
-    def __init__(self, model):
-        self.model = model
-
-    async def read_one(self, query: Dict[str, Any], projection: Optional[Dict[str, Any]] = None):
-        with SessionLocal() as session:
-            row = _query_first(session, self.model, query)
-            if row is None:
-                return None
-            return _apply_projection(_serialize_row(self.model, row), projection or {})
-
-    async def create_one(self, doc: Dict[str, Any]):
-        with SessionLocal() as session:
-            row = _make_row_from_doc(self.model, doc)
-            session.add(row)
-            session.commit()
-            session.refresh(row)
-            return _serialize_row(self.model, row)
-
-    async def update_record(self, query: Dict[str, Any], update: Dict[str, Any]):
-        with SessionLocal() as session:
-            row = _query_first(session, self.model, query)
-            if row is None:
-                return None
-            updates = update.get("$set", update)
-            for key, value in updates.items():
-                setattr(row, _field_name_for_model(self.model, key), _coerce_value(self.model, key, value))
-            session.commit()
-            session.refresh(row)
-            return _serialize_row(self.model, row)
-
-    async def delete_record(self, query: Dict[str, Any]):
-        with SessionLocal() as session:
-            row = _query_first(session, self.model, query)
-            if row is None:
-                return None
-            session.delete(row)
-            session.commit()
-            return {"ok": True}
-
-    def find(self, query: Dict[str, Any], projection: Optional[Dict[str, Any]] = None):
-        return SQLAlchemyCursor(self.model, query or {}, projection or {})
-
-    def aggregate_rows(self, pipeline: List[Dict[str, Any]]):
-        with SessionLocal() as session:
-            match = {}
-            group_spec = None
-            for step in pipeline:
-                if "$match" in step:
-                    match = step["$match"]
-                elif "$group" in step:
-                    group_spec = step["$group"]
-            if not group_spec:
-                return SQLAlchemyAggregation([])
-            if self.model is FabricDispatchORM and group_spec.get("_id") == "$fabric_lot_id" and group_spec.get("total") == {"$sum": "$kg_dispatched"}:
-                query = session.query(FabricDispatchORM.fabric_lot_id, func.sum(FabricDispatchORM.kg_dispatched).label("total"))
-                for field, value in match.items():
-                    if field == "fabric_lot_id" and isinstance(value, dict) and "$in" in value:
-                        query = query.filter(FabricDispatchORM.fabric_lot_id.in_(value["$in"]))
-                    elif field == "archived" and value == {"$ne": True}:
-                        query = query.filter(FabricDispatchORM.archived.is_(False))
-                rows = query.group_by(FabricDispatchORM.fabric_lot_id).all()
-                return SQLAlchemyAggregation([
-                    {"_id": row.fabric_lot_id, "total": float(row.total or 0.0)}
-                    for row in rows
-                ])
-            return SQLAlchemyAggregation([])
-
-
-class SQLAlchemyDB:
-    def __init__(self):
-        self.users = SQLAlchemyCollection(UserORM)
-        self.buyers = SQLAlchemyCollection(BuyerORM)
-        self.product_types = SQLAlchemyCollection(ProductTypeORM)
-        self.vendors = SQLAlchemyCollection(VendorORM)
-        self.fabric_lots = SQLAlchemyCollection(FabricLotORM)
-        self.fabric_dispatches = SQLAlchemyCollection(FabricDispatchORM)
-        self.orders = SQLAlchemyCollection(OrderORM)
-        self.production_returns = SQLAlchemyCollection(ProductionReturnORM)
-        self.app_settings = SQLAlchemyCollection(AppSettingORM)
-
-    def __getitem__(self, key: str):
-        return self._collection_for_name(key)
-
-    def _collection_for_name(self, name: str):
-        model = {
-            "users": UserORM,
-            "buyers": BuyerORM,
-            "product_types": ProductTypeORM,
-            "vendors": VendorORM,
-            "fabric_lots": FabricLotORM,
-            "fabric_dispatches": FabricDispatchORM,
-            "orders": OrderORM,
-            "production_returns": ProductionReturnORM,
-            "app_settings": AppSettingORM,
-        }.get(name)
-        if model is None:
-            raise KeyError(name)
-        return SQLAlchemyCollection(model)
-
-
-def _field_name_for_model(model, key: str) -> str:
-    if key == "id":
-        return "id"
-    if key == "archived":
-        return "archived"
-    return key
-
-
-def _coerce_value(model, key: str, value: Any) -> Any:
-    if value is None:
-        return None
-    if key in {"created_at", "updated_at", "date_received", "date", "order_date", "delivery_date"}:
-        if isinstance(value, datetime):
-            return value
-        if isinstance(value, str):
-            try:
-                return datetime.fromisoformat(value.replace("Z", "+00:00"))
-            except Exception:
-                return value
-    return value
-
-
-def _make_row_from_doc(model, doc: Dict[str, Any]):
-    payload = {}
-    for key, value in doc.items():
-        if key == "created_at" and value is None:
-            continue
-        if key == "updated_at" and value is None:
-            continue
-        if key in {"created_at", "updated_at", "date_received", "date", "order_date", "delivery_date"}:
-            payload[key] = _coerce_value(model, key, value)
-        else:
-            payload[key] = value
-    if model is UserORM:
-        if "company_id" not in payload:
-            payload["company_id"] = _ensure_default_company_id()
-        if "password_hash" not in payload and "password" in payload:
-            payload["password_hash"] = payload.pop("password")
-        return model(**payload)
-    if model is AppSettingORM:
-        if "company_id" not in payload:
-            payload["company_id"] = _ensure_default_company_id()
-        return model(**payload)
-    if model is BuyerORM:
-        if "company_id" not in payload:
-            payload["company_id"] = _ensure_default_company_id()
-        return model(**payload)
-    if model is ProductTypeORM:
-        if "company_id" not in payload:
-            payload["company_id"] = _ensure_default_company_id()
-        return model(**payload)
-    if model is VendorORM:
-        if "company_id" not in payload:
-            payload["company_id"] = _ensure_default_company_id()
-        return model(**payload)
-    if model is FabricLotORM:
-        if "company_id" not in payload:
-            payload["company_id"] = _ensure_default_company_id()
-        return model(**payload)
-    if model is FabricDispatchORM:
-        if "company_id" not in payload:
-            payload["company_id"] = _ensure_default_company_id()
-        return model(**payload)
-    if model is OrderORM:
-        if "company_id" not in payload:
-            payload["company_id"] = _ensure_default_company_id()
-        return model(**payload)
-    if model is ProductionReturnORM:
-        if "company_id" not in payload:
-            payload["company_id"] = _ensure_default_company_id()
-        return model(**payload)
-    return model(**payload)
-
-
-def _ensure_default_company_id() -> str:
-    with SessionLocal() as session:
-        company = session.query(CompanyORM).first()
-        if company is not None:
-            return company.id
-        company = CompanyORM(name="FabriTrack", code="FT", contact_email="ops@fabrik.com", contact_phone="1234")
-        session.add(company)
-        session.commit()
-        session.refresh(company)
-        return company.id
-
-
-def _query_first(session, model, filters: Dict[str, Any]):
-    query = session.query(model)
-    query = _apply_query_filters(query, model, filters or {})
-    return query.first()
-
-
-def _apply_query_filters(query, model, filters: Dict[str, Any]):
-    if not filters:
-        return query
-    for key, value in filters.items():
-        if key == "archived":
-            query = query.filter(getattr(model, "archived") == value)
-        elif key == "$ne":
-            continue
-        elif key == "id":
-            query = query.filter(getattr(model, "id") == value)
-        elif key == "username":
-            query = query.filter(getattr(model, "username") == value)
-        elif key == "name":
-            query = query.filter(getattr(model, "name") == value)
-        elif key == "key":
-            query = query.filter(getattr(model, "key") == value)
-        elif key == "fabric_lot_id":
-            query = query.filter(getattr(model, "fabric_lot_id") == value)
-        elif key == "vendor_id":
-            query = query.filter(getattr(model, "vendor_id") == value)
-        elif key == "order_id":
-            query = query.filter(getattr(model, "order_id") == value)
-        elif key == "product_type_id":
-            query = query.filter(getattr(model, "product_type_id") == value)
-        elif key == "stage":
-            query = query.filter(getattr(model, "stage") == value)
-        else:
-            query = query.filter(getattr(model, key) == value)
-    return query
-
-
-def _apply_projection(payload: Dict[str, Any], projection: Dict[str, Any]) -> Dict[str, Any]:
-    if not projection:
-        return payload
-    result = dict(payload)
-    for key, value in projection.items():
-        if value == 0 and key in result:
-            result.pop(key)
-    return result
-
-
-def _serialize_row(model, row):
-    if isinstance(row, UserORM):
-        return {"id": row.id, "username": row.username, "password_hash": row.password_hash}
-    if isinstance(row, BuyerORM):
-        return {
-            "id": row.id,
-            "name": row.name,
-            "contact": row.contact,
-            "country": row.country,
-            "type": row.type,
-            "archived": row.archived,
-            "created_at": _dt_to_iso(row.created_at),
-        }
-    if isinstance(row, ProductTypeORM):
-        return {
-            "id": row.id,
-            "name": row.name,
-            "avg_fabric_per_piece_kg": row.avg_fabric_per_piece_kg,
-            "description": row.description,
-            "archived": row.archived,
-            "created_at": _dt_to_iso(row.created_at),
-        }
-    if isinstance(row, VendorORM):
-        return {
-            "id": row.id,
-            "name": row.name,
-            "type": row.type,
-            "contact": row.contact,
-            "location": row.location,
-            "archived": row.archived,
-            "created_at": _dt_to_iso(row.created_at),
-        }
-    if isinstance(row, FabricLotORM):
-        return {
-            "id": row.id,
-            "fabric_type": row.fabric_type,
-            "color": row.color,
-            "supplier": row.supplier,
-            "kg_received": row.kg_received,
-            "cost_per_kg": row.cost_per_kg,
-            "date_received": _dt_to_iso(row.date_received),
-            "notes": row.notes,
-            "archived": row.archived,
-            "created_at": _dt_to_iso(row.created_at),
-        }
-    if isinstance(row, FabricDispatchORM):
-        return {
-            "id": row.id,
-            "fabric_lot_id": row.fabric_lot_id,
-            "vendor_id": row.vendor_id,
-            "order_id": row.order_id,
-            "product_type_id": row.product_type_id,
-            "kg_dispatched": row.kg_dispatched,
-            "date": _dt_to_iso(row.date),
-            "notes": row.notes,
-            "archived": row.archived,
-            "created_at": _dt_to_iso(row.created_at),
-        }
-    if isinstance(row, OrderORM):
-        return {
-            "id": row.id,
-            "order_number": row.order_number,
-            "buyer_id": row.buyer_id,
-            "product_type_id": row.product_type_id,
-            "quantity": row.quantity,
-            "unit_price": row.unit_price,
-            "stage": row.stage,
-            "order_date": _dt_to_iso(row.order_date),
-            "delivery_date": _dt_to_iso(row.delivery_date),
-            "notes": row.notes,
-            "archived": row.archived,
-            "created_at": _dt_to_iso(row.created_at),
-        }
-    if isinstance(row, ProductionReturnORM):
-        return {
-            "id": row.id,
-            "vendor_id": row.vendor_id,
-            "order_id": row.order_id,
-            "product_type_id": row.product_type_id,
-            "pieces_received": row.pieces_received,
-            "pieces_defected": row.pieces_defected,
-            "kg_used": row.kg_used,
-            "fabric_returned_kg": row.fabric_returned_kg,
-            "cutting_waste_kg": row.cutting_waste_kg,
-            "job_work_rate_per_piece": row.job_work_rate_per_piece,
-            "date": _dt_to_iso(row.date),
-            "notes": row.notes,
-            "archived": row.archived,
-            "created_at": _dt_to_iso(row.created_at),
-        }
-    if isinstance(row, AppSettingORM):
-        return {"id": row.id, "key": row.key, "app_name": row.app_name, "tagline": row.tagline}
-    return {key: getattr(row, key) for key in row.__dict__ if not key.startswith("_")}
-
-
-def _dt_to_iso(value):
-    if value is None:
-        return None
-    if isinstance(value, datetime):
-        return value.isoformat()
-    return str(value)
-
-
-store = SQLAlchemyDB()
+mongo_url = os.environ['MONGO_URL']
+client = AsyncIOMotorClient(mongo_url)
+db = client[os.environ['DB_NAME']]
 
 app = FastAPI(title="Garment Manufacturing ERP")
 api_router = APIRouter(prefix="/api")
 
 
 @app.on_event("startup")
-async def startup_event() -> None:
+def startup_event() -> None:
     init_db()
-    await seed_admin()
 
 
 # ============ Utilities ============
@@ -485,13 +89,10 @@ async def get_current_user(request: Request) -> dict:
         raise HTTPException(status_code=401, detail="Token expired")
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid token")
-    with SessionLocal() as session:
-        user = session.query(UserORM).filter(UserORM.username == payload["sub"]).first()
+    user = await db.users.find_one({"username": payload["sub"]}, {"_id": 0, "password_hash": 0})
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
-    payload_user = _serialize_row(UserORM, user)
-    payload_user.pop("password_hash", None)
-    return payload_user
+    return user
 
 
 COOKIE_NAME = "loomline_token"
@@ -499,25 +100,23 @@ COOKIE_MAX_AGE = JWT_EXPIRY_DAYS * 24 * 60 * 60
 
 
 def set_auth_cookie(response, token: str) -> None:
-    is_production = os.environ.get("ENV", "").lower() == "production"
     response.set_cookie(
         key=COOKIE_NAME,
         value=token,
         max_age=COOKIE_MAX_AGE,
         httponly=True,
-        secure=is_production,
+        secure=True,
         samesite="lax",
         path="/",
     )
 
 
 def clear_auth_cookie(response) -> None:
-    is_production = os.environ.get("ENV", "").lower() == "production"
     response.delete_cookie(
         key=COOKIE_NAME,
         path="/",
         httponly=True,
-        secure=is_production,
+        secure=True,
         samesite="lax",
     )
 
@@ -707,64 +306,26 @@ class ProductionReturnCreate(BaseModel):
 
 
 # ============ Helpers ============
-def _resolve_model(collection):
-    return getattr(collection, "model", collection)
-
-
 async def _list(collection, include_archived: bool = False):
-    model = _resolve_model(collection)
-    with SessionLocal() as session:
-        query = session.query(model)
-        if not include_archived and hasattr(model, "archived"):
-            query = query.filter(getattr(model, "archived").isnot(True))
-        query = query.order_by(getattr(model, "created_at").desc())
-        rows = query.limit(2000).all()
-        return [_serialize_row(model, row) for row in rows]
+    q = {} if include_archived else {"archived": {"$ne": True}}
+    return await collection.find(q, {"_id": 0}).sort("created_at", -1).to_list(2000)
 
 
 async def _get(collection, item_id):
-    model = _resolve_model(collection)
-    with SessionLocal() as session:
-        row = session.query(model).filter(getattr(model, "id") == item_id).first()
-        if row is None:
-            raise HTTPException(status_code=404, detail="Not found")
-        return _serialize_row(model, row)
-
-
-async def _create(collection, payload: Dict[str, Any]):
-    model = _resolve_model(collection)
-    with SessionLocal() as session:
-        row = _make_row_from_doc(model, payload)
-        session.add(row)
-        session.commit()
-        session.refresh(row)
-        return _serialize_row(model, row)
-
-
-async def _delete(collection, item_id: str):
-    model = _resolve_model(collection)
-    with SessionLocal() as session:
-        row = session.query(model).filter(getattr(model, "id") == item_id).first()
-        if row is not None:
-            session.delete(row)
-            session.commit()
-    return {"ok": True}
+    doc = await collection.find_one({"id": item_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Not found")
+    return doc
 
 
 async def _update(collection, item_id: str, updates: Dict[str, Any], allowed_fields: List[str]):
-    model = _resolve_model(collection)
     clean = {k: v for k, v in updates.items() if k in allowed_fields and v is not None}
     if not clean:
         raise HTTPException(status_code=400, detail="No valid fields to update")
-    with SessionLocal() as session:
-        row = session.query(model).filter(getattr(model, "id") == item_id).first()
-        if row is None:
-            raise HTTPException(status_code=404, detail="Not found")
-        for key, value in clean.items():
-            setattr(row, _field_name_for_model(model, key), _coerce_value(model, key, value))
-        session.commit()
-        session.refresh(row)
-        return _serialize_row(model, row)
+    result = await collection.update_one({"id": item_id}, {"$set": clean})
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Not found")
+    return await _get(collection, item_id)
 
 
 class ArchivePayload(BaseModel):
@@ -774,106 +335,106 @@ class ArchivePayload(BaseModel):
 # ============ BUYERS ============
 @api_router.get("/buyers", response_model=List[Buyer])
 async def list_buyers(include_archived: bool = False):
-    return await _list(store.buyers, include_archived)
+    return await _list(db.buyers, include_archived)
 
 
 @api_router.post("/buyers", response_model=Buyer)
 async def create_buyer(payload: BuyerCreate):
     obj = Buyer(**payload.model_dump())
-    await _create(store.buyers, obj.model_dump())
+    await db.buyers.insert_one(obj.model_dump())
     return obj
 
 
 @api_router.patch("/buyers/{item_id}", response_model=Buyer)
 async def update_buyer(item_id: str, updates: Dict[str, Any]):
-    return await _update(store.buyers, item_id, updates, ["name", "contact", "country", "type"])
+    return await _update(db.buyers, item_id, updates, ["name", "contact", "country", "type"])
 
 
 @api_router.patch("/buyers/{item_id}/archive")
 async def archive_buyer(item_id: str, payload: ArchivePayload):
-    return await _update(store.buyers, item_id, {"archived": payload.archived}, ["archived"])
+    return await _update(db.buyers, item_id, {"archived": payload.archived}, ["archived"])
 
 
 @api_router.delete("/buyers/{item_id}")
 async def delete_buyer(item_id: str):
-    await _delete(store.buyers, item_id)
+    await db.buyers.delete_one({"id": item_id})
     return {"ok": True}
 
 
 # ============ PRODUCT TYPES ============
 @api_router.get("/product-types", response_model=List[ProductType])
 async def list_product_types(include_archived: bool = False):
-    return await _list(store.product_types, include_archived)
+    return await _list(db.product_types, include_archived)
 
 
 @api_router.post("/product-types", response_model=ProductType)
 async def create_product_type(payload: ProductTypeCreate):
     obj = ProductType(**payload.model_dump())
-    await _create(store.product_types, obj.model_dump())
+    await db.product_types.insert_one(obj.model_dump())
     return obj
 
 
 @api_router.patch("/product-types/{item_id}", response_model=ProductType)
 async def update_product_type(item_id: str, updates: Dict[str, Any]):
-    return await _update(store.product_types, item_id, updates, ["name", "avg_fabric_per_piece_kg", "description"])
+    return await _update(db.product_types, item_id, updates, ["name", "avg_fabric_per_piece_kg", "description"])
 
 
 @api_router.patch("/product-types/{item_id}/archive")
 async def archive_product_type(item_id: str, payload: ArchivePayload):
-    return await _update(store.product_types, item_id, {"archived": payload.archived}, ["archived"])
+    return await _update(db.product_types, item_id, {"archived": payload.archived}, ["archived"])
 
 
 @api_router.delete("/product-types/{item_id}")
 async def delete_product_type(item_id: str):
-    await _delete(store.product_types, item_id)
+    await db.product_types.delete_one({"id": item_id})
     return {"ok": True}
 
 
 # ============ VENDORS ============
 @api_router.get("/vendors", response_model=List[Vendor])
 async def list_vendors(include_archived: bool = False):
-    return await _list(store.vendors, include_archived)
+    return await _list(db.vendors, include_archived)
 
 
 @api_router.post("/vendors", response_model=Vendor)
 async def create_vendor(payload: VendorCreate):
     obj = Vendor(**payload.model_dump())
-    await _create(store.vendors, obj.model_dump())
+    await db.vendors.insert_one(obj.model_dump())
     return obj
 
 
 @api_router.patch("/vendors/{item_id}", response_model=Vendor)
 async def update_vendor(item_id: str, updates: Dict[str, Any]):
-    return await _update(store.vendors, item_id, updates, ["name", "type", "contact", "location"])
+    return await _update(db.vendors, item_id, updates, ["name", "type", "contact", "location"])
 
 
 @api_router.patch("/vendors/{item_id}/archive")
 async def archive_vendor(item_id: str, payload: ArchivePayload):
-    return await _update(store.vendors, item_id, {"archived": payload.archived}, ["archived"])
+    return await _update(db.vendors, item_id, {"archived": payload.archived}, ["archived"])
 
 
 @api_router.delete("/vendors/{item_id}")
 async def delete_vendor(item_id: str):
-    await _delete(store.vendors, item_id)
+    await db.vendors.delete_one({"id": item_id})
     return {"ok": True}
 
 
 # ============ FABRIC LOTS ============
 @api_router.get("/fabric-lots")
 async def list_fabric_lots(include_archived: bool = False):
-    lots = await _list(store.fabric_lots, include_archived)
+    lots = await _list(db.fabric_lots, include_archived)
     if not lots:
         return lots
+    # Batch aggregate: sum kg_dispatched grouped by fabric_lot_id in a single query
     lot_ids = [l["id"] for l in lots]
-    with SessionLocal() as session:
-        rows = session.query(
-            FabricDispatchORM.fabric_lot_id,
-            func.sum(FabricDispatchORM.kg_dispatched).label("total"),
-        ).filter(
-            FabricDispatchORM.fabric_lot_id.in_(lot_ids),
-            FabricDispatchORM.archived.isnot(True),
-        ).group_by(FabricDispatchORM.fabric_lot_id).all()
-        totals = {row.fabric_lot_id: float(row.total or 0.0) for row in rows}
+    pipeline = [
+        {"$match": {"fabric_lot_id": {"$in": lot_ids}, "archived": {"$ne": True}}},
+        {"$group": {"_id": "$fabric_lot_id", "total": {"$sum": "$kg_dispatched"}}},
+    ]
+    totals = {
+        d["_id"]: d["total"]
+        async for d in db.fabric_dispatches.aggregate(pipeline)
+    }
     for lot in lots:
         total_dispatched = totals.get(lot["id"], 0.0)
         lot["kg_dispatched"] = round(total_dispatched, 3)
@@ -887,41 +448,41 @@ async def create_fabric_lot(payload: FabricLotCreate):
     if not data.get("date_received"):
         data["date_received"] = now_iso()
     obj = FabricLot(**data)
-    await _create(store.fabric_lots, obj.model_dump())
+    await db.fabric_lots.insert_one(obj.model_dump())
     return obj
 
 
 @api_router.patch("/fabric-lots/{item_id}", response_model=FabricLot)
 async def update_fabric_lot(item_id: str, updates: Dict[str, Any]):
-    return await _update(store.fabric_lots, item_id, updates,
+    return await _update(db.fabric_lots, item_id, updates,
                          ["fabric_type", "color", "supplier", "kg_received", "cost_per_kg", "date_received", "notes"])
 
 
 @api_router.patch("/fabric-lots/{item_id}/archive")
 async def archive_fabric_lot(item_id: str, payload: ArchivePayload):
-    return await _update(store.fabric_lots, item_id, {"archived": payload.archived}, ["archived"])
+    return await _update(db.fabric_lots, item_id, {"archived": payload.archived}, ["archived"])
 
 
 @api_router.delete("/fabric-lots/{item_id}")
 async def delete_fabric_lot(item_id: str):
-    await _delete(store.fabric_lots, item_id)
+    await db.fabric_lots.delete_one({"id": item_id})
     return {"ok": True}
 
 
 # ============ FABRIC DISPATCHES ============
 @api_router.get("/fabric-dispatches", response_model=List[FabricDispatch])
 async def list_fabric_dispatches(include_archived: bool = False):
-    return await _list(store.fabric_dispatches, include_archived)
+    return await _list(db.fabric_dispatches, include_archived)
 
 
 @api_router.post("/fabric-dispatches", response_model=FabricDispatch)
 async def create_fabric_dispatch(payload: FabricDispatchCreate):
-    lot = await _get(store.fabric_lots, payload.fabric_lot_id)
-    with SessionLocal() as session:
-        total_dispatched = session.query(func.sum(FabricDispatchORM.kg_dispatched)).filter(
-            FabricDispatchORM.fabric_lot_id == lot["id"],
-            FabricDispatchORM.archived.isnot(True),
-        ).scalar() or 0.0
+    lot = await _get(db.fabric_lots, payload.fabric_lot_id)
+    dispatched = await db.fabric_dispatches.aggregate([
+        {"$match": {"fabric_lot_id": lot["id"], "archived": {"$ne": True}}},
+        {"$group": {"_id": None, "total": {"$sum": "$kg_dispatched"}}}
+    ]).to_list(1)
+    total_dispatched = dispatched[0]["total"] if dispatched else 0.0
     remaining = lot["kg_received"] - total_dispatched
     if payload.kg_dispatched > remaining + 0.001:
         raise HTTPException(status_code=400,
@@ -930,31 +491,31 @@ async def create_fabric_dispatch(payload: FabricDispatchCreate):
     if not data.get("date"):
         data["date"] = now_iso()
     obj = FabricDispatch(**data)
-    await _create(store.fabric_dispatches, obj.model_dump())
+    await db.fabric_dispatches.insert_one(obj.model_dump())
     return obj
 
 
 @api_router.patch("/fabric-dispatches/{item_id}", response_model=FabricDispatch)
 async def update_fabric_dispatch(item_id: str, updates: Dict[str, Any]):
-    return await _update(store.fabric_dispatches, item_id, updates,
+    return await _update(db.fabric_dispatches, item_id, updates,
                          ["fabric_lot_id", "vendor_id", "order_id", "product_type_id", "kg_dispatched", "date", "notes"])
 
 
 @api_router.patch("/fabric-dispatches/{item_id}/archive")
 async def archive_fabric_dispatch(item_id: str, payload: ArchivePayload):
-    return await _update(store.fabric_dispatches, item_id, {"archived": payload.archived}, ["archived"])
+    return await _update(db.fabric_dispatches, item_id, {"archived": payload.archived}, ["archived"])
 
 
 @api_router.delete("/fabric-dispatches/{item_id}")
 async def delete_fabric_dispatch(item_id: str):
-    await _delete(store.fabric_dispatches, item_id)
+    await db.fabric_dispatches.delete_one({"id": item_id})
     return {"ok": True}
 
 
 # ============ ORDERS ============
 @api_router.get("/orders", response_model=List[Order])
 async def list_orders(include_archived: bool = False):
-    return await _list(store.orders, include_archived)
+    return await _list(db.orders, include_archived)
 
 
 @api_router.get("/orders/stages")
@@ -968,40 +529,41 @@ async def create_order(payload: OrderCreate):
     if not data.get("order_date"):
         data["order_date"] = now_iso()
     obj = Order(**data)
-    await _create(store.orders, obj.model_dump())
+    await db.orders.insert_one(obj.model_dump())
     return obj
 
 
 @api_router.patch("/orders/{item_id}", response_model=Order)
 async def update_order(item_id: str, updates: Dict[str, Any]):
-    return await _update(store.orders, item_id, updates,
+    return await _update(db.orders, item_id, updates,
                          ["order_number", "buyer_id", "product_type_id", "quantity", "unit_price",
                           "stage", "order_date", "delivery_date", "notes"])
 
 
 @api_router.patch("/orders/{item_id}/archive")
 async def archive_order(item_id: str, payload: ArchivePayload):
-    return await _update(store.orders, item_id, {"archived": payload.archived}, ["archived"])
+    return await _update(db.orders, item_id, {"archived": payload.archived}, ["archived"])
 
 
 @api_router.patch("/orders/{item_id}/stage", response_model=Order)
 async def update_order_stage(item_id: str, payload: OrderStageUpdate):
     if payload.stage not in PRODUCTION_STAGES:
         raise HTTPException(status_code=400, detail="Invalid stage")
-    await _update(store.orders, item_id, {"stage": payload.stage}, ["stage"])
-    return await _get(store.orders, item_id)
+    await db.orders.update_one({"id": item_id}, {"$set": {"stage": payload.stage}})
+    doc = await _get(db.orders, item_id)
+    return doc
 
 
 @api_router.delete("/orders/{item_id}")
 async def delete_order(item_id: str):
-    await _delete(store.orders, item_id)
+    await db.orders.delete_one({"id": item_id})
     return {"ok": True}
 
 
 # ============ PRODUCTION RETURNS ============
 @api_router.get("/production-returns", response_model=List[ProductionReturn])
 async def list_production_returns(include_archived: bool = False):
-    return await _list(store.production_returns, include_archived)
+    return await _list(db.production_returns, include_archived)
 
 
 @api_router.post("/production-returns", response_model=ProductionReturn)
@@ -1010,13 +572,13 @@ async def create_production_return(payload: ProductionReturnCreate):
     if not data.get("date"):
         data["date"] = now_iso()
     obj = ProductionReturn(**data)
-    await _create(store.production_returns, obj.model_dump())
+    await db.production_returns.insert_one(obj.model_dump())
     return obj
 
 
 @api_router.patch("/production-returns/{item_id}", response_model=ProductionReturn)
 async def update_production_return(item_id: str, updates: Dict[str, Any]):
-    return await _update(store.production_returns, item_id, updates,
+    return await _update(db.production_returns, item_id, updates,
                          ["vendor_id", "order_id", "product_type_id", "pieces_received", "pieces_defected",
                           "kg_used", "fabric_returned_kg", "cutting_waste_kg", "job_work_rate_per_piece",
                           "date", "notes"])
@@ -1024,12 +586,12 @@ async def update_production_return(item_id: str, updates: Dict[str, Any]):
 
 @api_router.patch("/production-returns/{item_id}/archive")
 async def archive_production_return(item_id: str, payload: ArchivePayload):
-    return await _update(store.production_returns, item_id, {"archived": payload.archived}, ["archived"])
+    return await _update(db.production_returns, item_id, {"archived": payload.archived}, ["archived"])
 
 
 @api_router.delete("/production-returns/{item_id}")
 async def delete_production_return(item_id: str):
-    await _delete(store.production_returns, item_id)
+    await db.production_returns.delete_one({"id": item_id})
     return {"ok": True}
 
 
@@ -1045,10 +607,10 @@ def _parse_iso(iso):
 
 async def _load_active(collection_names: List[str]) -> Dict[str, list]:
     """Load all non-archived docs for the given collections."""
+    q = {"archived": {"$ne": True}}
     out: Dict[str, list] = {}
     for name in collection_names:
-        collection = getattr(store, name)
-        out[name] = await _list(collection, include_archived=False)
+        out[name] = await db[name].find(q, {"_id": 0}).to_list(5000)
     return out
 
 
@@ -1151,16 +713,15 @@ async def root():
 # ============ AUTH ENDPOINTS ============
 @api_router.post("/auth/login")
 async def login(payload: LoginPayload, response: Response):
-    with SessionLocal() as session:
-        user = session.query(UserORM).filter(UserORM.username == payload.username.strip()).first()
-    if not user or not verify_password(payload.password, user.password_hash or ""):
+    user = await db.users.find_one({"username": payload.username.strip()}, {"_id": 0})
+    if not user or not verify_password(payload.password, user.get("password_hash", "")):
         raise HTTPException(status_code=401, detail="Invalid username or password")
-    token = create_token(user.username)
+    token = create_token(user["username"])
     set_auth_cookie(response, token)
     return {
         "access_token": token,
         "token_type": "bearer",
-        "user": {"username": user.username},
+        "user": {"username": user["username"]},
     }
 
 
@@ -1177,17 +738,15 @@ async def me(user: dict = Depends(get_current_user)):
 
 @api_router.post("/auth/change-password")
 async def change_password(payload: ChangePasswordPayload, user: dict = Depends(get_current_user)):
-    with SessionLocal() as session:
-        existing = session.query(UserORM).filter(UserORM.username == user["username"]).first()
-    if not existing or not verify_password(payload.current_password, existing.password_hash or ""):
+    existing = await db.users.find_one({"username": user["username"]}, {"_id": 0})
+    if not verify_password(payload.current_password, existing.get("password_hash", "")):
         raise HTTPException(status_code=400, detail="Current password is incorrect")
     if len(payload.new_password) < 4:
         raise HTTPException(status_code=400, detail="New password must be at least 4 characters")
-    with SessionLocal() as session:
-        row = session.query(UserORM).filter(UserORM.username == user["username"]).first()
-        if row is not None:
-            row.password_hash = hash_password(payload.new_password)
-            session.commit()
+    await db.users.update_one(
+        {"username": user["username"]},
+        {"$set": {"password_hash": hash_password(payload.new_password)}},
+    )
     return {"ok": True}
 
 
@@ -1197,23 +756,20 @@ async def change_username(
     response: Response,
     user: dict = Depends(get_current_user),
 ):
-    with SessionLocal() as session:
-        existing = session.query(UserORM).filter(UserORM.username == user["username"]).first()
-    if not existing or not verify_password(payload.current_password, existing.password_hash or ""):
+    existing = await db.users.find_one({"username": user["username"]}, {"_id": 0})
+    if not verify_password(payload.current_password, existing.get("password_hash", "")):
         raise HTTPException(status_code=400, detail="Current password is incorrect")
     new_u = payload.new_username.strip()
     if not new_u:
         raise HTTPException(status_code=400, detail="Username cannot be empty")
     if new_u != user["username"]:
-        with SessionLocal() as session:
-            clash = session.query(UserORM).filter(UserORM.username == new_u).first()
+        clash = await db.users.find_one({"username": new_u})
         if clash:
             raise HTTPException(status_code=400, detail="Username already taken")
-    with SessionLocal() as session:
-        row = session.query(UserORM).filter(UserORM.username == user["username"]).first()
-        if row is not None:
-            row.username = new_u
-            session.commit()
+    await db.users.update_one(
+        {"username": user["username"]},
+        {"$set": {"username": new_u}},
+    )
     token = create_token(new_u)
     set_auth_cookie(response, token)
     return {"ok": True, "access_token": token, "user": {"username": new_u}}
@@ -1221,13 +777,12 @@ async def change_username(
 
 # ============ APP SETTINGS ============
 async def _get_settings() -> dict:
-    with SessionLocal() as session:
-        doc = session.query(AppSettingORM).filter(AppSettingORM.key == "app").first()
-    if doc is None:
+    doc = await db.app_settings.find_one({"key": "app"}, {"_id": 0})
+    if not doc:
         default = {"key": "app", "app_name": "LOOMLINE", "tagline": "Manufacturing ERP"}
-        await _create(store.app_settings, default)
+        await db.app_settings.insert_one(default)
         doc = default
-    return {"app_name": doc.get("app_name", "LOOMLINE") if isinstance(doc, dict) else getattr(doc, "app_name", "LOOMLINE"), "tagline": doc.get("tagline", "Manufacturing ERP") if isinstance(doc, dict) else getattr(doc, "tagline", "Manufacturing ERP")}
+    return {"app_name": doc.get("app_name", "LOOMLINE"), "tagline": doc.get("tagline", "Manufacturing ERP")}
 
 
 @api_router.get("/settings")
@@ -1240,18 +795,9 @@ async def update_settings(payload: AppSettingsUpdate, user: dict = Depends(get_c
     updates = {k: v for k, v in payload.model_dump(exclude_none=True).items()}
     if not updates:
         raise HTTPException(status_code=400, detail="Nothing to update")
-    with SessionLocal() as session:
-        row = session.query(AppSettingORM).filter(AppSettingORM.key == "app").first()
-        if row is None:
-            row = AppSettingORM(key="app", app_name="LOOMLINE", tagline="Manufacturing ERP")
-            session.add(row)
-        for key, value in updates.items():
-            if key == "app_name":
-                row.app_name = value
-            elif key == "tagline":
-                row.tagline = value
-        session.commit()
-        session.refresh(row)
+    await db.app_settings.update_one(
+        {"key": "app"}, {"$set": updates}, upsert=True,
+    )
     return await _get_settings()
 
 
@@ -1379,22 +925,25 @@ async def _pending_pieces(dispatches: list, returns: list) -> int:
     order_ids = list({d["order_id"] for d in dispatches if d.get("order_id")})
     if not order_ids:
         return 0
-    with SessionLocal() as session:
-        orders = session.query(OrderORM.id, OrderORM.quantity).filter(OrderORM.id.in_(order_ids)).all()
+    # Batch fetch all orders in one query
+    orders = await db.orders.find(
+        {"id": {"$in": order_ids}}, {"_id": 0, "id": 1, "quantity": 1}
+    ).to_list(5000)
     done_by_order: Dict[str, int] = {}
     for r in returns:
         oid = r.get("order_id")
         if oid:
             done_by_order[oid] = done_by_order.get(oid, 0) + r["pieces_received"]
-    return sum(max(order.quantity - done_by_order.get(order.id, 0), 0) for order in orders)
+    return sum(max(o.get("quantity", 0) - done_by_order.get(o["id"], 0), 0) for o in orders)
 
 
 async def _ledger_txns(dispatches: list, returns: list) -> list:
     lot_ids = list({d["fabric_lot_id"] for d in dispatches})
     product_ids = list({r["product_type_id"] for r in returns})
-    with SessionLocal() as session:
-        lots = {lot.id: _serialize_row(FabricLotORM, lot) for lot in session.query(FabricLotORM).filter(FabricLotORM.id.in_(lot_ids)).all()}
-        products = {product.id: _serialize_row(ProductTypeORM, product) for product in session.query(ProductTypeORM).filter(ProductTypeORM.id.in_(product_ids)).all()}
+    lots = {l["id"]: l for l in await db.fabric_lots.find(
+        {"id": {"$in": lot_ids}}, {"_id": 0}).to_list(5000)}
+    products = {p["id"]: p for p in await db.product_types.find(
+        {"id": {"$in": product_ids}}, {"_id": 0}).to_list(5000)}
 
     txns = []
     for d in dispatches:
@@ -1421,22 +970,10 @@ async def _ledger_txns(dispatches: list, returns: list) -> list:
 
 @api_router.get("/vendors/{vendor_id}/ledger")
 async def vendor_ledger(vendor_id: str):
-    vendor = await _get(store.vendors, vendor_id)
-    with SessionLocal() as session:
-        dispatches = [
-            _serialize_row(FabricDispatchORM, row)
-            for row in session.query(FabricDispatchORM).filter(
-                FabricDispatchORM.vendor_id == vendor_id,
-                FabricDispatchORM.archived.isnot(True),
-            ).order_by(FabricDispatchORM.date.desc()).all()
-        ]
-        returns = [
-            _serialize_row(ProductionReturnORM, row)
-            for row in session.query(ProductionReturnORM).filter(
-                ProductionReturnORM.vendor_id == vendor_id,
-                ProductionReturnORM.archived.isnot(True),
-            ).order_by(ProductionReturnORM.date.desc()).all()
-        ]
+    vendor = await _get(db.vendors, vendor_id)
+    q = {"vendor_id": vendor_id, "archived": {"$ne": True}}
+    dispatches = await db.fabric_dispatches.find(q, {"_id": 0}).sort("date", -1).to_list(5000)
+    returns = await db.production_returns.find(q, {"_id": 0}).sort("date", -1).to_list(5000)
 
     summary = _ledger_summary(dispatches, returns)
     summary["pieces_pending_return"] = await _pending_pieces(dispatches, returns)
@@ -1468,8 +1005,8 @@ def _reconciliation_metrics(dispatches: list, returns: list) -> dict:
 
 async def _avg_fabric_cost(dispatches: list) -> float:
     lot_ids = list({d["fabric_lot_id"] for d in dispatches})
-    with SessionLocal() as session:
-        lots = {lot.id: _serialize_row(FabricLotORM, lot) for lot in session.query(FabricLotORM).filter(FabricLotORM.id.in_(lot_ids)).all()}
+    lots = {l["id"]: l for l in await db.fabric_lots.find(
+        {"id": {"$in": lot_ids}}, {"_id": 0}).to_list(5000)}
     total_cost = total_kg = 0.0
     for d in dispatches:
         lot = lots.get(d["fabric_lot_id"])
@@ -1502,22 +1039,10 @@ def _piece_costing(recon: dict, avg_cost_per_kg: float, returns: list, order: di
 
 @api_router.get("/orders/{order_id}/reconciliation")
 async def order_reconciliation(order_id: str):
-    order = await _get(store.orders, order_id)
-    with SessionLocal() as session:
-        dispatches = [
-            _serialize_row(FabricDispatchORM, row)
-            for row in session.query(FabricDispatchORM).filter(
-                FabricDispatchORM.order_id == order_id,
-                FabricDispatchORM.archived.isnot(True),
-            ).all()
-        ]
-        returns = [
-            _serialize_row(ProductionReturnORM, row)
-            for row in session.query(ProductionReturnORM).filter(
-                ProductionReturnORM.order_id == order_id,
-                ProductionReturnORM.archived.isnot(True),
-            ).all()
-        ]
+    order = await _get(db.orders, order_id)
+    q = {"order_id": order_id, "archived": {"$ne": True}}
+    dispatches = await db.fabric_dispatches.find(q, {"_id": 0}).to_list(5000)
+    returns = await db.production_returns.find(q, {"_id": 0}).to_list(5000)
 
     recon = _reconciliation_metrics(dispatches, returns)
     avg_cost = await _avg_fabric_cost(dispatches)
@@ -1558,7 +1083,7 @@ async def import_fabric_lots(file: UploadFile = File(...)):
                 "notes": row.get("notes", "").strip(),
             }
             obj = FabricLot(**payload)
-            await _create(store.fabric_lots, obj.model_dump())
+            await db.fabric_lots.insert_one(obj.model_dump())
             created += 1
         except Exception as e:
             errors.append(f"Row {i}: {e}")
@@ -1587,20 +1112,17 @@ async def import_orders(file: UploadFile = File(...)):
                 errors.append(f"Row {i}: missing required fields")
                 continue
 
-            with SessionLocal() as session:
-                buyer_row = session.query(BuyerORM).filter(BuyerORM.name == buyer_name).first()
-                product_row = session.query(ProductTypeORM).filter(ProductTypeORM.name == product_name).first()
-            if not buyer_row:
+            buyer_doc = await db.buyers.find_one({"name": buyer_name}, {"_id": 0})
+            if not buyer_doc:
                 buyer_obj = Buyer(name=buyer_name, type="local")
-                buyer_doc = await _create(store.buyers, buyer_obj.model_dump())
-            else:
-                buyer_doc = _serialize_row(BuyerORM, buyer_row)
+                await db.buyers.insert_one(buyer_obj.model_dump())
+                buyer_doc = buyer_obj.model_dump()
 
-            if not product_row:
+            product_doc = await db.product_types.find_one({"name": product_name}, {"_id": 0})
+            if not product_doc:
                 product_obj = ProductType(name=product_name, avg_fabric_per_piece_kg=0.25)
-                product_doc = await _create(store.product_types, product_obj.model_dump())
-            else:
-                product_doc = _serialize_row(ProductTypeORM, product_row)
+                await db.product_types.insert_one(product_obj.model_dump())
+                product_doc = product_obj.model_dump()
 
             payload = {
                 "order_number": order_number,
@@ -1613,7 +1135,7 @@ async def import_orders(file: UploadFile = File(...)):
                 "order_date": now_iso(),
             }
             obj = Order(**payload)
-            await _create(store.orders, obj.model_dump())
+            await db.orders.insert_one(obj.model_dump())
             created += 1
         except Exception as e:
             errors.append(f"Row {i}: {e}")
@@ -1625,7 +1147,7 @@ app.include_router(api_router)
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=["http://localhost:3000", "http://localhost:3001", "http://localhost:3002", "http://localhost:3003", "http://localhost:3004", "http://localhost:3005", "http://127.0.0.1:3000", "http://127.0.0.1:3001", "http://127.0.0.1:3002", "http://127.0.0.1:3003", "http://127.0.0.1:3004", "http://127.0.0.1:3005"],
+    allow_origin_regex=".*",
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -1669,17 +1191,14 @@ async def auth_middleware(request: Request, call_next):
 async def seed_admin():
     username = os.environ.get("ADMIN_USERNAME", "admin")
     password = os.environ.get("ADMIN_PASSWORD", "admin")
-    expected_hash = hash_password(password)
-    with SessionLocal() as session:
-        existing = session.query(UserORM).filter(UserORM.username == username).first()
-        if existing is None:
-            session.add(UserORM(username=username, password_hash=expected_hash, company_id=_ensure_default_company_id()))
-            session.commit()
-            logger.info(f"Seeded admin user: {username}")
-        else:
-            if existing.password_hash != expected_hash:
-                existing.password_hash = expected_hash
-                session.commit()
+    existing = await db.users.find_one({"username": username})
+    if not existing:
+        await db.users.insert_one({
+            "username": username,
+            "password_hash": hash_password(password),
+            "created_at": now_iso(),
+        })
+        logger.info(f"Seeded admin user: {username}")
     # Ensure default settings exist
     await _get_settings()
 

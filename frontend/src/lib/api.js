@@ -1,13 +1,38 @@
 import axios from "axios";
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
+const BACKEND_URL = (process.env.REACT_APP_BACKEND_URL || "http://127.0.0.1:8000").replace(/\/$/, "");
 export const API = `${BACKEND_URL}/api`;
+
+const TOKEN_KEY = "loomline_token";
+
+export const getStoredToken = () => {
+  if (typeof window === "undefined") return null;
+  return window.localStorage.getItem(TOKEN_KEY);
+};
+
+export const setStoredToken = (token) => {
+  if (typeof window === "undefined") return;
+  if (token) {
+    window.localStorage.setItem(TOKEN_KEY, token);
+  } else {
+    window.localStorage.removeItem(TOKEN_KEY);
+  }
+};
 
 // Axios instance with cookie credentials — token lives in httpOnly cookie set by backend
 export const api = axios.create({
   baseURL: API,
   headers: { "Content-Type": "application/json" },
   withCredentials: true,
+});
+
+api.interceptors.request.use((config) => {
+  const token = getStoredToken();
+  if (token) {
+    config.headers = config.headers || {};
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
 });
 
 // If any request returns 401, redirect to login (unless already on it)

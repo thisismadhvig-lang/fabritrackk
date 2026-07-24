@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
-import { api } from "@/lib/api";
+import { api, getStoredToken, setStoredToken } from "@/lib/api";
 
 const AuthCtx = createContext(null);
 const DEFAULT_SETTINGS = { app_name: "LOOMLINE", tagline: "Manufacturing ERP" };
@@ -20,6 +20,8 @@ export function AuthProvider({ children }) {
 
   const login = useCallback(async (username, password) => {
     const res = await api.post("/auth/login", { username, password });
+    const token = res.data.access_token;
+    setStoredToken(token);
     setUser(res.data.user);
     return res.data.user;
   }, []);
@@ -30,6 +32,7 @@ export function AuthProvider({ children }) {
     } catch {
       /* ignore */
     }
+    setStoredToken(null);
     setUser(null);
     window.location.href = "/login";
   }, []);
@@ -38,6 +41,12 @@ export function AuthProvider({ children }) {
     let cancelled = false;
     (async () => {
       await refreshSettings();
+      const storedToken = getStoredToken();
+      if (!storedToken) {
+        if (!cancelled) setUser(null);
+        if (!cancelled) setChecking(false);
+        return;
+      }
       try {
         const r = await api.get("/auth/me");
         if (!cancelled) setUser(r.data);

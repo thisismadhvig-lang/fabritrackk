@@ -274,6 +274,117 @@ class DocumentReferenceORM(Base, AuditColumnsMixin):
     relation_type = Column(String, nullable=False, default="linked")
 
 
+class BuyerORM(Base, AuditColumnsMixin):
+    __tablename__ = "buyers"
+
+    id = Column(String, primary_key=True, index=True, default=uid)
+    company_id = Column(String, ForeignKey("companies.id"), nullable=False, index=True)
+    name = Column(String, nullable=False, index=True)
+    contact = Column(String, default="")
+    country = Column(String, default="")
+    type = Column(String, default="local")
+    archived = Column(Boolean, default=False, nullable=False)
+
+
+class ProductTypeORM(Base, AuditColumnsMixin):
+    __tablename__ = "product_types"
+
+    id = Column(String, primary_key=True, index=True, default=uid)
+    company_id = Column(String, ForeignKey("companies.id"), nullable=False, index=True)
+    name = Column(String, nullable=False, index=True)
+    avg_fabric_per_piece_kg = Column(Float, default=0.25, nullable=False)
+    description = Column(Text, default="")
+    archived = Column(Boolean, default=False, nullable=False)
+
+
+class VendorORM(Base, AuditColumnsMixin):
+    __tablename__ = "vendors"
+
+    id = Column(String, primary_key=True, index=True, default=uid)
+    company_id = Column(String, ForeignKey("companies.id"), nullable=False, index=True)
+    name = Column(String, nullable=False, index=True)
+    type = Column(String, default="third_party")
+    contact = Column(String, default="")
+    location = Column(String, default="")
+    archived = Column(Boolean, default=False, nullable=False)
+
+
+class FabricLotORM(Base, AuditColumnsMixin):
+    __tablename__ = "fabric_lots"
+
+    id = Column(String, primary_key=True, index=True, default=uid)
+    company_id = Column(String, ForeignKey("companies.id"), nullable=False, index=True)
+    fabric_type = Column(String, nullable=False, index=True)
+    color = Column(String, default="")
+    supplier = Column(String, default="")
+    kg_received = Column(Float, nullable=False, default=0.0)
+    cost_per_kg = Column(Float, default=0.0, nullable=False)
+    date_received = Column(DateTime(timezone=True), default=now_utc, nullable=False)
+    notes = Column(Text, default="")
+    archived = Column(Boolean, default=False, nullable=False)
+
+
+class FabricDispatchORM(Base, AuditColumnsMixin):
+    __tablename__ = "fabric_dispatches"
+
+    id = Column(String, primary_key=True, index=True, default=uid)
+    company_id = Column(String, ForeignKey("companies.id"), nullable=False, index=True)
+    fabric_lot_id = Column(String, nullable=False, index=True)
+    vendor_id = Column(String, nullable=False, index=True)
+    order_id = Column(String, nullable=True, index=True)
+    product_type_id = Column(String, nullable=True, index=True)
+    kg_dispatched = Column(Float, nullable=False, default=0.0)
+    date = Column(DateTime(timezone=True), default=now_utc, nullable=False)
+    notes = Column(Text, default="")
+    archived = Column(Boolean, default=False, nullable=False)
+
+
+class OrderORM(Base, AuditColumnsMixin):
+    __tablename__ = "orders"
+
+    id = Column(String, primary_key=True, index=True, default=uid)
+    company_id = Column(String, ForeignKey("companies.id"), nullable=False, index=True)
+    order_number = Column(String, nullable=False, index=True)
+    buyer_id = Column(String, nullable=False, index=True)
+    product_type_id = Column(String, nullable=False, index=True)
+    quantity = Column(Integer, nullable=False, default=0)
+    unit_price = Column(Float, default=0.0, nullable=False)
+    stage = Column(String, default="order_received")
+    order_date = Column(DateTime(timezone=True), default=now_utc, nullable=False)
+    delivery_date = Column(DateTime(timezone=True), nullable=True)
+    notes = Column(Text, default="")
+    archived = Column(Boolean, default=False, nullable=False)
+
+
+class ProductionReturnORM(Base, AuditColumnsMixin):
+    __tablename__ = "production_returns"
+
+    id = Column(String, primary_key=True, index=True, default=uid)
+    company_id = Column(String, ForeignKey("companies.id"), nullable=False, index=True)
+    vendor_id = Column(String, nullable=False, index=True)
+    order_id = Column(String, nullable=True, index=True)
+    product_type_id = Column(String, nullable=False, index=True)
+    pieces_received = Column(Integer, nullable=False, default=0)
+    pieces_defected = Column(Integer, default=0, nullable=False)
+    kg_used = Column(Float, default=0.0, nullable=False)
+    fabric_returned_kg = Column(Float, default=0.0, nullable=False)
+    cutting_waste_kg = Column(Float, default=0.0, nullable=False)
+    job_work_rate_per_piece = Column(Float, default=0.0, nullable=False)
+    date = Column(DateTime(timezone=True), default=now_utc, nullable=False)
+    notes = Column(Text, default="")
+    archived = Column(Boolean, default=False, nullable=False)
+
+
+class AppSettingORM(Base, AuditColumnsMixin):
+    __tablename__ = "app_settings"
+
+    id = Column(String, primary_key=True, index=True, default=uid)
+    company_id = Column(String, ForeignKey("companies.id"), nullable=False, index=True)
+    key = Column(String, nullable=False, unique=True, index=True)
+    app_name = Column(String, default="LOOMLINE")
+    tagline = Column(String, default="Manufacturing ERP")
+
+
 def build_document_number(sequence: DocumentSequenceORM, *, year: int, sequence_number: int) -> str:
     return f"{sequence.prefix}-{year}-{sequence_number:04d}"
 
@@ -295,6 +406,14 @@ __all__ = [
     "DocumentApprovalORM",
     "DocumentAuditLogORM",
     "DocumentReferenceORM",
+    "BuyerORM",
+    "ProductTypeORM",
+    "VendorORM",
+    "FabricLotORM",
+    "FabricDispatchORM",
+    "OrderORM",
+    "ProductionReturnORM",
+    "AppSettingORM",
     "DOCUMENT_STATES",
     "build_document_number",
 ]
