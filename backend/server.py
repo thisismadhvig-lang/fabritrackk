@@ -1205,9 +1205,10 @@ async def seed_admin():
 
 @app.on_event("startup")
 async def startup_event():
-    await seed_admin()
+    pass
 
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
-    client.close()
+    pass
+
