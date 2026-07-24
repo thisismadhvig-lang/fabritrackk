@@ -1,0 +1,112 @@
+{
+  "theme": "Archetype 4: Swiss & High-Contrast (Industrial/Objective)",
+  "description": "Professional industrial dashboard with a focus on data density, operational clarity, and high-contrast status indicators. Avoid decorative elements in favor of functional precision.",
+  "typography": {
+    "strategy": "Swiss Brutalist Industrial",
+    "headings": {
+      "family": "Outfit",
+      "weights": ["600", "700"],
+      "tracking": "tracking-tight",
+      "instruction": "Use Outfit for KPI numbers and main section headers. Keep it tight and authoritative."
+    },
+    "body": {
+      "family": "IBM Plex Sans",
+      "weights": ["400", "500"],
+      "instruction": "Use IBM Plex Sans for tables, forms, and data labels to maintain high readability in dense data environments."
+    },
+    "labels": {
+      "style": "uppercase, tracking-[0.1em], text-xs, font-semibold text-slate-500",
+      "instruction": "Overlines and small headers must be uppercase with wide spacing."
+    }
+  },
+  "colors": {
+    "background": {
+      "base": "#F8FAFC",
+      "surface": "#FFFFFF",
+      "instruction": "Use stark white for cards and 10% grey (slate-50) for the main canvas to create structural contrast."
+    },
+    "structural": {
+      "main": "#0F172A",
+      "muted": "#64748B",
+      "border": "#E2E8F0"
+    },
+    "industrial_accents": {
+      "critical": "#EF4444",
+      "warning": "#EAB308",
+      "safe": "#22C55E",
+      "info": "#3B82F6",
+      "instruction": "Colors must only be used functionally for status (Red=Defect/Stop, Yellow=Warning/Delay, Green=Approval/Shipped)."
+    }
+  },
+  "surfaces_and_layouts": {
+    "style": "Grid Borders & Flat Geometry",
+    "dashboard_layout": "ISA-101 hierarchical layout. Sidebar navigation + Top KPI strip + Flexible CSS grid for tables/charts.",
+    "cards": {
+      "background": "bg-white",
+      "border": "border border-slate-200",
+      "radius": "rounded-md",
+      "shadow": "shadow-sm",
+      "instruction": "Flat solid surfaces with subtle 1px borders. NO glassmorphism. It reduces data clarity."
+    },
+    "spacing": "Compact and dense. Use p-4 or p-6 for widget padding. Gap-4 or Gap-6 for dashboard grids."
+  },
+  "components": {
+    "buttons": "Flat, sharp or max rounded-md. Primary button in structural main color (Obsidian) or context-specific status color.",
+    "tables": "Dense. Use Shadcn Table. No alternating row colors, just clean borders (border-b). Sticky headers for long lists.",
+    "forms": "Use Shadcn Form, Input, Select. Labels above inputs. Clear validation states (Red/Green border).",
+    "charts": "Use Recharts or Shadcn charts. Keep grids minimal, tooltips clear, use industrial accent colors for data lines/bars.",
+    "navigation": "Fixed sidebar navigation (240px wide). Clean, monochromatic icons.",
+    "badges": "Pill-shaped, subtle background with strong text color matching the status (e.g., bg-red-100 text-red-700)."
+  },
+  "motion": {
+    "strategy": "Fast Feedback",
+    "hover": "Subtle background shifts (e.g., hover:bg-slate-50). Do not use aggressive translations on data rows.",
+    "transitions": "Instant or 150ms max. Operators need speed, not cinematic delays."
+  },
+  "icons": {
+    "library": "lucide-react",
+    "style": "stroke-2, crisp and clear"
+  },
+  "image_urls": {
+    "fabric_inventory": [
+      {
+        "url": "https://images.pexels.com/photos/17329670/pexels-photo-17329670.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+        "description": "Fabric rolls in warehouse (Inventory Context)"
+      },
+      {
+        "url": "https://images.pexels.com/photos/236748/pexels-photo-236748.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+        "description": "Rows of textile rolls (Industrial Background)"
+      }
+    ],
+    "manufacturing": [
+      {
+        "url": "https://images.unsplash.com/photo-1560796952-f1c9b838544c?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2NzZ8MHwxfHNlYXJjaHwyfHxjbG90aGluZyUyMG1hbnVmYWN0dXJpbmclMjBzZXdpbmd8ZW58MHx8fHwxNzgyMjM0MzkxfDA&ixlib=rb-4.1.0&q=85",
+        "description": "Industrial sewing machine (Production Context)"
+      }
+    ],
+    "products": [
+      {
+        "url": "https://images.pexels.com/photos/12025472/pexels-photo-12025472.jpeg",
+        "description": "Blank T-shirt product mockup"
+      }
+    ],
+    "logos": [
+      {
+        "url": "https://images.pexels.com/photos/21898300/pexels-photo-21898300.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+        "description": "Minimal company logo placeholder"
+      }
+    ]
+  },
+  "accessibility": {
+    "contrast": "Strict APCA/WCAG AA compliance. Dark text on light backgrounds for tables.",
+    "testing": "All interactive elements MUST have data-testid attributes (e.g., data-testid='submit-order-btn')."
+  },
+  "UNIVERSAL_GUIDELINES_FOR_MAIN_AGENT": [
+    "Prioritize data clarity and operational hierarchy over decorative aesthetics.",
+    "Use high-contrast colors exclusively for statuses (Success, Warning, Critical).",
+    "Do NOT center align dashboard content; left-align data for scannability.",
+    "Ensure every form and critical action has immediate feedback (Sonner toast).",
+    "Use data-testid attributes extensively on inputs, buttons, and table rows.",
+    "Implement dense layouts with clear borders to mimic industrial HMI interfaces."
+  ]
+}
