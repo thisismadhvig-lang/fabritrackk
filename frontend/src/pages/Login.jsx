@@ -19,11 +19,13 @@ export default function Login() {
 
   useEffect(() => {
     let cancelled = false;
-    api.get("/settings").then((r) => {
-      if (cancelled) return;
-      setAppName(r.data.app_name || "LOOMLINE");
-      setTagline(r.data.tagline || "Manufacturing ERP");
-    }).catch(() => {});
+    api.get("/settings", { timeout: 5000 })
+      .then((r) => {
+        if (cancelled) return;
+        setAppName(r.data.app_name || "LOOMLINE");
+        setTagline(r.data.tagline || "Manufacturing ERP");
+      })
+      .catch(() => {});
     return () => { cancelled = true; };
   }, []);
 

@@ -1,0 +1,50 @@
+# =========================
+# Python
+# =========================
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+backend/__pycache__/
+backend/tests/__pycache__/
+
+# =========================
+# Logs
+# =========================
+*.log
+backend/backend.log
+
+# =========================
+# Environment
+# =========================
+.env
+backend/.env
+
+# =========================
+# Node
+# =========================
+frontend/node_modules/
+frontend/build/
+frontend/node_modules/.cache/
+
+# =========================
+# VS Code
+# =========================
+.vscode/
+
+# =========================
+# macOS
+# =========================
+.DS_Store
+
+# =========================
+# Windows
+# =========================
+Thumbs.db
+Desktop.ini

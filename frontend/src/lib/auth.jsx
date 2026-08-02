@@ -21,8 +21,10 @@ export function AuthProvider({ children }) {
   const login = useCallback(async (username, password) => {
     const res = await api.post("/auth/login", { username, password });
     const token = res.data.access_token;
-    setStoredToken(token);
-    setUser(res.data.user);
+    if (token) {
+      setStoredToken(token);
+    }
+    setUser(res.data.user || null);
     return res.data.user;
   }, []);
 
@@ -40,18 +42,22 @@ export function AuthProvider({ children }) {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      await refreshSettings();
-      const storedToken = getStoredToken();
-      if (!storedToken) {
-        if (!cancelled) setUser(null);
-        if (!cancelled) setChecking(false);
-        return;
+      try {
+        await refreshSettings();
+      } catch {
+        // ignore and continue to the auth check below
       }
+
       try {
         const r = await api.get("/auth/me");
         if (!cancelled) setUser(r.data);
       } catch {
-        if (!cancelled) setUser(null);
+        if (!cancelled) {
+          setUser(null);
+          if (getStoredToken()) {
+            setStoredToken(null);
+          }
+        }
       } finally {
         if (!cancelled) setChecking(false);
       }

@@ -6,6 +6,7 @@ import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { CheckCircle2, Circle } from "lucide-react";
+import UniversalPrintButton from "@/components/erp/UniversalPrintButton";
 
 const STAGE_TONE = {
   order_received: "bg-slate-100 text-slate-700",
@@ -28,6 +29,7 @@ export default function Production() {
   const [orders, setOrders] = useState([]);
   const [buyers, setBuyers] = useState([]);
   const [products, setProducts] = useState([]);
+  const [selectedPrintIds, setSelectedPrintIds] = useState([]);
 
   const load = async () => {
     const [o, b, p] = await Promise.all([
@@ -56,6 +58,27 @@ export default function Production() {
       <PageHeader
         title="Production Pipeline"
         subtitle="Track every order through the 14-stage manufacturing workflow"
+        actions={
+          <UniversalPrintButton
+            moduleName="Production Tracking"
+            rows={orders}
+            columns={[
+              { key: "order_number", label: "Order #" },
+              { key: "buyer_id", label: "Buyer" },
+              { key: "product_type_id", label: "Product" },
+              { key: "quantity", label: "Qty" },
+              { key: "stage", label: "Stage" },
+            ]}
+            summary={[{ label: "Total Orders", value: orders.length }]}
+            reportTitle="Production Tracking"
+            reportPeriod="All Orders"
+            selectedRows={orders.filter((order) => selectedPrintIds.includes(order.id))}
+            filteredRows={orders}
+            allRows={orders}
+            selectedIds={selectedPrintIds}
+            onSelectedIdsChange={setSelectedPrintIds}
+          />
+        }
       />
 
       {/* Legend / stages timeline */}

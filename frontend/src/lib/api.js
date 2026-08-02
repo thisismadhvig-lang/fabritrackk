@@ -24,6 +24,7 @@ export const api = axios.create({
   baseURL: API,
   headers: { "Content-Type": "application/json" },
   withCredentials: true,
+  timeout: 8000,
 });
 
 api.interceptors.request.use((config) => {
