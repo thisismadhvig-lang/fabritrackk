@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { toast } from "sonner";
 import { api, fmtDate, fmtNum, STAGE_LABEL } from "@/lib/api";
@@ -72,7 +72,7 @@ export default function Orders() {
   const [detailOrder, setDetailOrder] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
 
-  const load = async () => {
+  const load = useCallback(async () => {
     const [o, b, p] = await Promise.all([
       api.get("/orders", { params: { include_archived: showArchived } }),
       api.get("/buyers", { params: { include_archived: true } }),
@@ -81,9 +81,10 @@ export default function Orders() {
     setOrders(o.data);
     setBuyers(b.data);
     setProducts(p.data);
-  };
+  }, [showArchived]);
 
-  useEffect(() => { load(); }, [showArchived]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); }, [load]);
 
   useEffect(() => {
     if (!orderId) {

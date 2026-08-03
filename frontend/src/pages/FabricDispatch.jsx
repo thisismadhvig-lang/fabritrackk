@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useLocation } from "react-router-dom";
 import { toast } from "sonner";
 import { api, fmtNum } from "@/lib/api";
@@ -32,6 +32,7 @@ const defaultHeader = {
   date: new Date().toISOString().slice(0, 10),
   vendorId: "",
   expectedReturnDate: "",
+  expectedPieces: "",
   remarks: "",
 };
 
@@ -205,7 +206,7 @@ export default function FabricDispatchPage() {
   const [viewingRecord, setViewingRecord] = useState(null);
   const [selectedPrintIds, setSelectedPrintIds] = useState([]);
 
-  const load = async () => {
+  const load = useCallback(async () => {
     setLoading(true);
     try {
       const [dispatches, fabricLots, vendorsResponse] = await Promise.all([
@@ -242,17 +243,17 @@ export default function FabricDispatchPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [showArchived]);
 
   useEffect(() => {
     load();
-  }, [showArchived]);
+  }, [load]);
 
   useEffect(() => {
     const handleRefresh = () => load();
     window.addEventListener("fabric-data-updated", handleRefresh);
     return () => window.removeEventListener("fabric-data-updated", handleRefresh);
-  }, []);
+  }, [load]);
 
   useEffect(() => {
     const params = new URLSearchParams(location.search);
@@ -285,6 +286,7 @@ export default function FabricDispatchPage() {
       date: parsed.date || new Date().toISOString().slice(0, 10),
       vendorId: record.vendor_id || "",
       expectedReturnDate: parsed.expectedReturnDate || "",
+      expectedPieces: record.expected_pieces != null ? String(record.expected_pieces) : parsed.expectedPieces || "",
       remarks: parsed.remarks || "",
     });
     setRows(
@@ -413,11 +415,13 @@ export default function FabricDispatchPage() {
 
     const totalQuantity = lineItems.reduce((sum, row) => sum + Number(row.quantity || 0), 0);
     const totalRolls = lineItems.reduce((sum, row) => sum + Number(row.rolls || 0), 0);
+    const expectedPiecesValue = Number(header.expectedPieces || 0);
     const payload = {
       fabric_lot_id: lineItems[0].fabricLotId,
       vendor_id: header.vendorId,
       date: header.date || undefined,
       kg_dispatched: totalQuantity,
+      expected_pieces: Number.isFinite(expectedPiecesValue) && expectedPiecesValue > 0 ? expectedPiecesValue : 0,
       notes: serializeDispatchNote(header, rows),
     };
 
@@ -587,6 +591,10 @@ export default function FabricDispatchPage() {
                             <div>
                               <Label>Expected Return Date</Label>
                               <Input type="date" value={header.expectedReturnDate} onChange={(e) => updateHeader("expectedReturnDate", e.target.value)} className="mt-1 h-9 rounded-lg border-slate-200" />
+                            </div>
+                            <div>
+                              <Label>Expected Pieces</Label>
+                              <Input type="number" value={header.expectedPieces} onChange={(e) => updateHeader("expectedPieces", e.target.value)} className="mt-1 h-9 rounded-lg border-slate-200" placeholder="0" />
                             </div>
                             <div>
                               <Label>Remarks</Label>

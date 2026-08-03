@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import sessionmaker
 
-from models import Base, MaterialAdjustmentORM, OrderItemORM, OrderORM, PartyLedgerEntryORM, PartyORM, ProductionReturnORM, ShipmentORM, ShipmentProductORM
+from models import Base, FabricDispatchORM, MaterialAdjustmentORM, OrderItemORM, OrderORM, PartyLedgerEntryORM, PartyORM, ProductionReturnORM, ShipmentORM, ShipmentProductORM
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
@@ -116,6 +116,13 @@ def ensure_schema() -> None:
         }.items():
             if column_name not in production_returns_columns:
                 conn.execute(text(f"ALTER TABLE production_returns ADD COLUMN {column_name} {column_def}"))
+
+        fabric_dispatches_columns = {column["name"] for column in inspector.get_columns("fabric_dispatches")}
+        for column_name, column_def in {
+            "expected_pieces": "FLOAT DEFAULT 0.0",
+        }.items():
+            if column_name not in fabric_dispatches_columns:
+                conn.execute(text(f"ALTER TABLE fabric_dispatches ADD COLUMN {column_name} {column_def}"))
 
         orders_columns = {column["name"] for column in inspector.get_columns("orders")}
         for column_name, column_def in {

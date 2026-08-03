@@ -409,6 +409,7 @@ class FabricDispatchORM(Base, AuditColumnsMixin):
     order_id = Column(String, nullable=True, index=True)
     product_type_id = Column(String, nullable=True, index=True)
     kg_dispatched = Column(Float, nullable=False, default=0.0)
+    expected_pieces = Column(Float, nullable=False, default=0.0)
     date = Column(DateTime(timezone=True), default=now_utc, nullable=False)
     notes = Column(Text, default="")
     archived = Column(Boolean, default=False, nullable=False)
@@ -666,7 +667,7 @@ class AppSettingORM(Base, AuditColumnsMixin):
     id = Column(String, primary_key=True, index=True, default=uid)
     company_id = Column(String, ForeignKey("companies.id"), nullable=False, index=True)
     key = Column(String, nullable=False, unique=True, index=True)
-    app_name = Column(String, default="LOOMLINE")
+    app_name = Column(String, default="FABRITRACK")
     tagline = Column(String, default="Manufacturing ERP")
     customization_data = Column(Text, default="{}")
 

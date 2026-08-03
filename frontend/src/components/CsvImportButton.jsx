@@ -2,7 +2,7 @@ import { useRef, useState } from "react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Upload, FileText } from "lucide-react";
 
 export default function CsvImportButton({ endpoint, label, columns, sampleFilename, onDone, testid }) {
@@ -57,7 +57,10 @@ export default function CsvImportButton({ endpoint, label, columns, sampleFilena
         </Button>
       </DialogTrigger>
       <DialogContent className="sm:max-w-md">
-        <DialogHeader><DialogTitle className="font-heading">{label}</DialogTitle></DialogHeader>
+        <DialogHeader>
+          <DialogTitle className="font-heading">{label}</DialogTitle>
+          <DialogDescription className="sr-only">Upload a CSV file and review any import errors.</DialogDescription>
+        </DialogHeader>
         <div className="space-y-4">
           <div className="text-sm text-slate-600">
             Upload a CSV file with these columns:

@@ -3,7 +3,7 @@ import axios from "axios";
 const BACKEND_URL = (process.env.REACT_APP_BACKEND_URL || "http://127.0.0.1:8000").replace(/\/$/, "");
 export const API = `${BACKEND_URL}/api`;
 
-const TOKEN_KEY = "loomline_token";
+const TOKEN_KEY = "fabritrack_token";
 
 export const getStoredToken = () => {
   if (typeof window === "undefined") return null;

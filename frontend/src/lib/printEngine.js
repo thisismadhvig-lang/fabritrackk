@@ -294,7 +294,7 @@ export function buildReportHtml({
 export function openPrintWindow(html, action = "print") {
   const popup = window.open("", "_blank", "width=1280,height=900,scrollbars=yes");
   if (!popup) {
-    window.alert("Please allow popups for printing.");
+    console.warn("Printing requires popups to be enabled in this browser.");
     return;
   }
   popup.document.open();

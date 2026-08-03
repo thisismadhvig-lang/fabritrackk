@@ -1,4 +1,4 @@
-# LOOMLINE Test Credentials
+# FABRITRACK Test Credentials
 
 ## Admin login
 - **URL**: `/login`
@@ -17,6 +17,6 @@
 - `PATCH /api/settings` — Bearer token, updates app_name / tagline
 
 ## Notes
-- JWT stored in browser localStorage under key `loomline_token`
+- JWT stored in browser localStorage under key `FABRITRACK_token`
 - Token expiry: 30 days
 - Every /api/* route except `/api/`, `/api/auth/login`, and `GET /api/settings` requires `Authorization: Bearer <token>` header

@@ -1,4 +1,4 @@
-# LOOMLINE — Garment Manufacturing & Inventory ERP
+# FABRITRACK — Garment Manufacturing & Inventory ERP
 
 ## Original problem statement
 Men's garment company (wholesale local + export). Track fabric (kg) coming in, distribute to own factory or third-party manufacturers, follow 14-stage manufacturing pipeline, capture pieces returned and defects, compute average fabric per piece.
@@ -57,7 +57,7 @@ Owner-operator of a small-to-mid garment factory. Data-heavy, operational focus.
 - Testing agent iteration 3: backend 100% (38/38 pytest), frontend 100% — all flows verified end-to-end
 
 ## Implemented (2026-02-17 · Code Review Fixes)
-- **Security**: JWT moved from localStorage → httpOnly Secure SameSite=Lax cookie (`loomline_token`, 30-day Max-Age). No auth data in browser storage. `/api/auth/logout` endpoint clears cookie with matching attributes. Bearer token still accepted for backwards-compat / API testing
+- **Security**: JWT moved from localStorage → httpOnly Secure SameSite=Lax cookie (`FABRITRACK_token`, 30-day Max-Age). No auth data in browser storage. `/api/auth/logout` endpoint clears cookie with matching attributes. Bearer token still accepted for backwards-compat / API testing
 - **CORS**: switched from `allow_origins=['*']` to `allow_origin_regex='.*'` so `allow_credentials=True` works cross-origin (browsers reject `*` with credentials)
 - **Backend refactor**: `dashboard_summary`, `dashboard_extended`, `vendor_ledger`, `order_reconciliation` split into 15 small single-responsibility helpers (`_load_active`, `_fabric_totals`, `_vendor_stats`, `_fabric_by_type`, `_product_stats`, `_stage_funnel`, `_todays_activity`, `_order_status`, `_fabric_location`, `_quality_metrics`, `_monthly_revenue`, `_ledger_summary`, `_pending_pieces`, `_ledger_txns`, `_reconciliation_metrics`, `_avg_fabric_cost`, `_piece_costing`)
 - **React hooks**: fixed missing deps in `AuthProvider` (useCallback + useMemo on value), `Login`, `Ledger`, `Reconciliation`. Removed all `eslint-disable-next-line` markers. Dashboard chart configs extracted to module-level constants; PieChart Cells keyed by `entry.product`; CsvImportButton errors keyed by error string; FabricDispatch `availableLots` wrapped in `useMemo`

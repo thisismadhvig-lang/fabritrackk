@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useLocation } from "react-router-dom";
 import { toast } from "sonner";
 import { api, fmtDate, fmtNum } from "@/lib/api";
@@ -158,11 +158,9 @@ export default function Returns() {
       unit: dispatch.unit || firstLine.unit || "kg",
       rolls,
       avgFabricPerPiece: 0,
-      expectedPieces: 0,
+      expectedPieces: Number(dispatch.expected_pieces ?? parsed.expectedPieces ?? parsed.expected_pieces ?? 0),
     };
   };
-
-  const getDispatchExpectedPieces = () => 0;
 
   const getDispatchAvgPerPiece = () => 0;
 
@@ -221,6 +219,14 @@ export default function Returns() {
 
   const vendorMap = useMemo(() => Object.fromEntries(vendors.map((vendor) => [vendor.id, vendor.name])), [vendors]);
   const dispatchMap = useMemo(() => Object.fromEntries(dispatches.map((dispatch) => [dispatch.id, dispatch])), [dispatches]);
+  const visibleDispatchOptions = useMemo(() => {
+
+  return dispatches.filter((dispatch) => {
+
+    const piecesLeft = Number(dispatch.pieces_left ?? 0);
+    return Number.isFinite(piecesLeft) && piecesLeft > 0;
+  });
+}, [dispatches]);
 
   const selectedDispatch = form.dispatch_id ? dispatchMap[form.dispatch_id] : null;
   const selectedDispatchMeta = useMemo(() => getDispatchMetadata(selectedDispatch), [selectedDispatch]);
@@ -230,12 +236,20 @@ export default function Returns() {
     if (Number.isFinite(manualValue) && manualValue > 0) {
       return manualValue;
     }
+    const dispatchExpectedPieces = Number(
+      selectedDispatch?.expected_pieces ??
+      selectedDispatchMeta.expectedPieces ??
+      0
+    );
+    if (Number.isFinite(dispatchExpectedPieces) && dispatchExpectedPieces > 0) {
+      return dispatchExpectedPieces;
+    }
     const avgFabricPerPieceValue = Number(form.avg_fabric_per_piece || 0);
     if (Number.isFinite(avgFabricPerPieceValue) && avgFabricPerPieceValue > 0 && Number(selectedDispatch?.kg_dispatched || 0) > 0) {
       return Number((Number(selectedDispatch?.kg_dispatched || 0) / avgFabricPerPieceValue).toFixed(3));
     }
     return 0;
-  }, [form.expected_pieces, form.avg_fabric_per_piece, selectedDispatch]);
+  }, [form.expected_pieces, form.avg_fabric_per_piece, selectedDispatch, selectedDispatchMeta]);
 
   const syncExpectedAndAvgFabric = (nextExpectedPieces, nextAvgFabricPerPiece) => {
     const safeExpected = Number(nextExpectedPieces || 0);
@@ -315,10 +329,11 @@ export default function Returns() {
   };
 
   const handleDispatchSelect = (dispatch) => {
+    const nextExpectedPieces = Number(dispatch.expected_pieces ?? 0);
     setForm((prev) => ({
       ...prev,
       dispatch_id: dispatch.id,
-      expected_pieces: formTouched ? prev.expected_pieces : "",
+      expected_pieces: formTouched ? prev.expected_pieces : (nextExpectedPieces > 0 ? String(nextExpectedPieces) : ""),
       avg_fabric_per_piece: formTouched ? prev.avg_fabric_per_piece : "",
       fabric_still_lying_kg: formTouched ? prev.fabric_still_lying_kg : "",
     }));
@@ -522,7 +537,7 @@ export default function Returns() {
                       <div>
                         <Label>Dispatch S.No.</Label>
                         <div className="mt-1">
-                          <DispatchSelector value={form.dispatch_id} options={dispatches} onSelect={handleDispatchSelect} />
+                          <DispatchSelector value={form.dispatch_id} options={visibleDispatchOptions} onSelect={handleDispatchSelect} />
                         </div>
                       </div>
                       <div>

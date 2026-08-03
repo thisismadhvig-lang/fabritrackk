@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { api, fmtDate } from "@/lib/api";
 import { Button } from "@/components/ui/button";
@@ -80,20 +80,22 @@ export default function FabricInventory() {
     };
   };
 
-  const load = async () => {
+  const load = useCallback(async () => {
     const res = await api.get("/fabric-lots", { params: { include_archived: showArchived } });
     setLots(res.data.map(hydrateLot));
-  };
-
-  useEffect(() => {
-    load();
   }, [showArchived]);
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     const handleRefresh = () => load();
     window.addEventListener("fabric-data-updated", handleRefresh);
     return () => window.removeEventListener("fabric-data-updated", handleRefresh);
-  }, []);
+  }, [load]);
 
   const openNew = () => {
     setEditing(null);

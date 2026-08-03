@@ -25,6 +25,7 @@ import PartyLedger from "@/pages/PartyLedger";
 import Warehouse from "@/pages/Warehouse";
 import Shipments from "@/pages/Shipments";
 import ProductionTraceability from "@/pages/ProductionTraceability";
+import About from "./pages/About";
 
 function Protected({ children }) {
   const { user, checking } = useAuth();
@@ -70,6 +71,7 @@ function Shell() {
           <Route path="/payments/transactions" element={<Payments module="transactions" />} />
           <Route path="/reconciliation" element={<Reconciliation />} />
           <Route path="/settings" element={<Settings />} />
+          <Route path="/about" element={<About />} />
           <Route path="/customization" element={<CustomizationStudio />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

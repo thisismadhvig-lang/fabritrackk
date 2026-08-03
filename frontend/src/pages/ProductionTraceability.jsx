@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "@/lib/api";
 import PageHeader from "@/components/PageHeader";
@@ -48,7 +48,7 @@ export default function ProductionTraceability() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
 
-  const buildTraceabilityParams = (overrides = {}) => {
+  const buildTraceabilityParams = useCallback((overrides = {}) => {
     const params = new URLSearchParams();
     params.set("view_by", overrides.view || view);
     if (overrides.search ?? search) params.set("search", overrides.search ?? search);
@@ -62,9 +62,9 @@ export default function ProductionTraceability() {
     if (overrides.dateFrom ?? dateFrom) params.set("date_from", overrides.dateFrom ?? dateFrom);
     if (overrides.dateTo ?? dateTo) params.set("date_to", overrides.dateTo ?? dateTo);
     return params;
-  };
+  }, [view, search, vendor, supplier, buyer, brand, product, material, order, dateFrom, dateTo]);
 
-  const loadTraceability = async (overrides = {}) => {
+  const loadTraceability = useCallback(async (overrides = {}) => {
     setLoading(true);
     const params = buildTraceabilityParams(overrides);
 
@@ -76,14 +76,15 @@ export default function ProductionTraceability() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [buildTraceabilityParams]);
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     const params = buildTraceabilityParams();
     const nextQuery = params.toString();
     setSearchParams(nextQuery ? `?${nextQuery}` : "", { replace: true });
     loadTraceability();
-  }, [view, search, vendor, supplier, buyer, brand, product, material, order, dateFrom, dateTo]);
+  }, [buildTraceabilityParams, loadTraceability, setSearchParams]);
 
   const summaryCards = useMemo(() => {
     if (!data?.summary) return [];

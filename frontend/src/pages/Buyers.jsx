@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { api, fmtDate } from "@/lib/api";
 import PageHeader from "@/components/PageHeader";
@@ -9,7 +9,7 @@ import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Plus, Pencil, Archive, ArchiveRestore } from "lucide-react";
 
@@ -22,8 +22,12 @@ export default function Buyers() {
   const [editing, setEditing] = useState(null);
   const [showArchived, setShowArchived] = useState(false);
 
-  const load = async () => setItems((await api.get("/buyers", { params: { include_archived: showArchived } })).data);
-  useEffect(() => { load(); }, [showArchived]);
+  const load = useCallback(async () => {
+    setItems((await api.get("/buyers", { params: { include_archived: showArchived } })).data);
+  }, [showArchived]);
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); }, [load]);
 
   const openNew = () => { setEditing(null); setForm(empty); setOpen(true); };
   const openEdit = (row) => {
@@ -72,7 +76,12 @@ export default function Buyers() {
                 </Button>
               </DialogTrigger>
               <DialogContent className="sm:max-w-md">
-                <DialogHeader><DialogTitle className="font-heading">{editing ? "Edit Buyer" : "New Buyer"}</DialogTitle></DialogHeader>
+                <DialogHeader>
+                  <DialogTitle className="font-heading">{editing ? "Edit Buyer" : "New Buyer"}</DialogTitle>
+                  <DialogDescription className="sr-only">
+                    {editing ? "Edit the selected buyer details." : "Create a new buyer record."}
+                  </DialogDescription>
+                </DialogHeader>
                 <form onSubmit={submit} className="space-y-3">
                   <div><Label>Name *</Label>
                     <Input data-testid="buyer-name-input" value={form.name}

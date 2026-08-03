@@ -1,3 +1,4 @@
+import json
 from typing import Any, Dict, List
 
 
@@ -28,6 +29,28 @@ def _payment_status_for_source(total_amount: float, paid_amount: float, source: 
     if paid_amount >= total_amount:
         return "Received"
     return "Partial"
+
+
+def _extract_return_expected_pieces(row: Dict[str, Any]) -> float:
+    value = row.get("expected_pieces")
+    if value in (None, ""):
+        notes = row.get("notes") or ""
+        if isinstance(notes, str) and notes.strip():
+            try:
+                parsed = json.loads(notes)
+            except Exception:
+                parsed = None
+            if isinstance(parsed, dict):
+                value = parsed.get("expected_pieces")
+    return _coerce_number(value, 0.0)
+
+
+def _resolve_expected_pieces(dispatch: Dict[str, Any], related_returns: List[Dict[str, Any]]) -> int:
+    receipt_values = [_coerce_number(_extract_return_expected_pieces(row), 0.0) for row in related_returns if _coerce_number(_extract_return_expected_pieces(row), 0.0) > 0]
+    if receipt_values:
+        return int(max(receipt_values))
+    dispatch_value = _coerce_number(dispatch.get("expected_pieces"), 0.0)
+    return int(dispatch_value) if dispatch_value > 0 else 0
 
 
 def build_material_ledger(inventory_rows: List[Dict[str, Any]], dispatch_rows: List[Dict[str, Any]], payables: List[Dict[str, Any]], receivables: List[Dict[str, Any]], vendor_lookup: Dict[str, Any] | None = None) -> Dict[str, Any]:
@@ -159,7 +182,7 @@ def build_manufacturing_ledger(dispatches: List[Dict[str, Any]], returns: List[D
     for dispatch in dispatches:
         dispatch_id = dispatch.get("id")
         related_returns = [row for row in returns if (row.get("dispatch_id") or row.get("order_id")) == dispatch_id]
-        expected_pieces = _coerce_number(dispatch.get("expected_pieces") or dispatch.get("kg_dispatched"), 0.0)
+        expected_pieces = _resolve_expected_pieces(dispatch, related_returns)
         pieces_received_total = sum(_coerce_number(row.get("pieces_received"), 0) for row in related_returns)
         pieces_pending = max(int(expected_pieces) - pieces_received_total, 0) if expected_pieces else 0
         rows = []
@@ -196,7 +219,7 @@ def build_manufacturing_ledger(dispatches: List[Dict[str, Any]], returns: List[D
             "vendor_name": dispatch.get("vendor_name") or "",
             "challan_no": dispatch.get("challan_no") or "",
             "kg_dispatched": _coerce_number(dispatch.get("kg_dispatched"), 0.0),
-            "expected_pieces": _coerce_number(dispatch.get("expected_pieces") or dispatch.get("kg_dispatched"), 0.0),
+            "expected_pieces": float(expected_pieces),
             "avg_fabric_per_piece": _coerce_number(dispatch.get("avg_fabric_per_piece"), 0.0),
             "pieces_received_total": pieces_received_total,
             "pieces_pending": pieces_pending,
@@ -273,6 +296,7 @@ def build_vendor_job_work_ledger(
                     "fabric_consumed_kg": round(_coerce_number(receipt.get("fabric_consumed_kg"), 0.0), 3),
                     "pieces_left": 0,
                     "pieces_defected": int(_coerce_number(receipt.get("pieces_defected"), 0)),
+                    "expected_pieces": round(_extract_return_expected_pieces(receipt), 3),
                     "notes": receipt.get("notes") or "",
                 })
 
@@ -288,6 +312,7 @@ def build_vendor_job_work_ledger(
                     "fabric_consumed_kg": round(_coerce_number(row.get("fabric_consumed_kg"), 0.0), 3),
                     "pieces_left": 0,
                     "pieces_defected": int(_coerce_number(row.get("pieces_defected"), 0)),
+                    "expected_pieces": round(_extract_return_expected_pieces(row), 3),
                     "notes": row.get("notes") or "",
                 }
                 for row in returns
@@ -296,7 +321,7 @@ def build_vendor_job_work_ledger(
 
         lot = lot_lookup.get(dispatch.get("fabric_lot_id")) or {}
         product = product_lookup.get(dispatch.get("product_type_id")) or {}
-        expected_pieces = int(_coerce_number(dispatch.get("expected_pieces"), 0))
+        expected_pieces = _resolve_expected_pieces(dispatch, related_receipts)
 
         related_receipts = sorted(
             related_receipts,
@@ -307,9 +332,11 @@ def build_vendor_job_work_ledger(
         )
         running_received = 0
         for receipt in related_receipts:
+            receipt_expected_pieces = _coerce_number(receipt.get("expected_pieces"), 0.0)
+            effective_expected_pieces = receipt_expected_pieces if receipt_expected_pieces > 0 else expected_pieces
             running_received += int(_coerce_number(receipt.get("pieces_received"), 0))
-            if expected_pieces > 0:
-                receipt["pieces_left"] = max(expected_pieces - running_received, 0)
+            if effective_expected_pieces > 0:
+                receipt["pieces_left"] = max(effective_expected_pieces - running_received, 0)
             else:
                 receipt["pieces_left"] = 0
 

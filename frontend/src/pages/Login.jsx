@@ -14,7 +14,7 @@ export default function Login() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
-  const [appName, setAppName] = useState("LOOMLINE");
+  const [appName, setAppName] = useState("FABRITRACK");
   const [tagline, setTagline] = useState("Manufacturing ERP");
 
   useEffect(() => {
@@ -22,7 +22,7 @@ export default function Login() {
     api.get("/settings", { timeout: 5000 })
       .then((r) => {
         if (cancelled) return;
-        setAppName(r.data.app_name || "LOOMLINE");
+        setAppName(r.data.app_name || "FABRITRACK");
         setTagline(r.data.tagline || "Manufacturing ERP");
       })
       .catch(() => {});

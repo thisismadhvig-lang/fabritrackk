@@ -223,6 +223,152 @@ def test_production_return_persists_manual_fabric_consumed_field():
     assert listed["fabric_consumed_kg"] == 3.5
 
 
+def test_return_dispatch_dropdown_only_shows_dispatches_with_positive_remaining_pieces():
+    client = TestClient(app)
+
+    login_resp = client.post(
+        "/api/auth/login",
+        json={"username": "admin", "password": "admin"},
+    )
+    assert login_resp.status_code == 200, login_resp.text
+
+    vendor_resp = client.post(
+        "/api/vendors",
+        json={"name": "Vendor Dropdown", "type": "third_party", "contact": "", "location": ""},
+    )
+    assert vendor_resp.status_code == 200, vendor_resp.text
+
+    lot_resp = client.post(
+        "/api/fabric-lots",
+        json={
+            "fabric_type": "Cotton",
+            "color": "Red",
+            "supplier": "Supplier Dropdown",
+            "kg_received": 50.0,
+            "cost_per_kg": 6.0,
+            "date_received": "2026-03-01",
+            "notes": "",
+        },
+    )
+    assert lot_resp.status_code == 200, lot_resp.text
+
+    dispatch_resp = client.post(
+        "/api/fabric-dispatches",
+        json={
+            "fabric_lot_id": lot_resp.json()["id"],
+            "vendor_id": vendor_resp.json()["id"],
+            "order_id": "order-dropdown-test",
+            "product_type_id": "product-type-dropdown-test",
+            "kg_dispatched": 10.0,
+            "date": "2026-03-02",
+            "notes": '{"dispatchNo": "FD-DROPDOWN", "avgFabricPerPiece": 1}',
+        },
+    )
+    assert dispatch_resp.status_code == 200, dispatch_resp.text
+    dispatch_id = dispatch_resp.json()["id"]
+
+    dispatches_resp = client.get("/api/production-returns/dispatches")
+    assert dispatches_resp.status_code == 200, dispatches_resp.text
+    assert not any(item["id"] == dispatch_id for item in dispatches_resp.json())
+
+    create_resp = client.post(
+        "/api/production-returns",
+        json={
+            "dispatch_id": dispatch_id,
+            "pieces_received": 1,
+            "expected_pieces": 3,
+        },
+    )
+    assert create_resp.status_code == 200, create_resp.text
+
+    dispatches_resp = client.get("/api/production-returns/dispatches")
+    assert dispatches_resp.status_code == 200, dispatches_resp.text
+    assert any(item["id"] == dispatch_id for item in dispatches_resp.json())
+
+    create_second_resp = client.post(
+        "/api/production-returns",
+        json={
+            "dispatch_id": dispatch_id,
+            "pieces_received": 2,
+            "expected_pieces": 3,
+        },
+    )
+    assert create_second_resp.status_code == 200, create_second_resp.text
+
+    dispatches_resp = client.get("/api/production-returns/dispatches")
+    assert dispatches_resp.status_code == 200, dispatches_resp.text
+    assert not any(item["id"] == dispatch_id for item in dispatches_resp.json())
+
+    delete_resp = client.delete(f"/api/production-returns/{create_second_resp.json()['id']}")
+    assert delete_resp.status_code == 200, delete_resp.text
+
+    dispatches_resp = client.get("/api/production-returns/dispatches")
+    assert dispatches_resp.status_code == 200, dispatches_resp.text
+    assert any(item["id"] == dispatch_id for item in dispatches_resp.json())
+
+
+def test_dispatch_expected_pieces_is_authoritative_for_returns_and_dropdown():
+    client = TestClient(app)
+
+    login_resp = client.post(
+        "/api/auth/login",
+        json={"username": "admin", "password": "admin"},
+    )
+    assert login_resp.status_code == 200, login_resp.text
+
+    vendor_resp = client.post(
+        "/api/vendors",
+        json={"name": "Vendor Authoritative", "type": "third_party", "contact": "", "location": ""},
+    )
+    assert vendor_resp.status_code == 200, vendor_resp.text
+
+    lot_resp = client.post(
+        "/api/fabric-lots",
+        json={
+            "fabric_type": "Cotton",
+            "color": "Yellow",
+            "supplier": "Supplier Authoritative",
+            "kg_received": 1000.0,
+            "cost_per_kg": 12.0,
+            "date_received": "2026-03-01",
+            "notes": "",
+        },
+    )
+    assert lot_resp.status_code == 200, lot_resp.text
+
+    dispatch_resp = client.post(
+        "/api/fabric-dispatches",
+        json={
+            "fabric_lot_id": lot_resp.json()["id"],
+            "vendor_id": vendor_resp.json()["id"],
+            "order_id": "order-authoritative",
+            "product_type_id": "product-type-authoritative",
+            "kg_dispatched": 1000.0,
+            "date": "2026-03-02",
+            "notes": "{}",
+            "expected_pieces": 9,
+        },
+    )
+    assert dispatch_resp.status_code == 200, dispatch_resp.text
+    dispatch_id = dispatch_resp.json()["id"]
+
+    create_resp = client.post(
+        "/api/production-returns",
+        json={
+            "dispatch_id": dispatch_id,
+            "pieces_received": 2,
+        },
+    )
+    assert create_resp.status_code == 200, create_resp.text
+    created = create_resp.json()
+    assert created["expected_pieces"] == 9.0
+
+    dispatches_resp = client.get("/api/production-returns/dispatches")
+    assert dispatches_resp.status_code == 200, dispatches_resp.text
+    matching_dispatch = next(item for item in dispatches_resp.json() if item["id"] == dispatch_id)
+    assert matching_dispatch["pieces_left"] == 7.0
+
+
 def test_production_return_does_not_fallback_to_dispatch_quantity_for_expected_pieces():
     client = TestClient(app)
 

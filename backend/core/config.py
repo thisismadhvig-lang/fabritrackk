@@ -14,6 +14,6 @@ def get_settings() -> Dict[str, Any]:
         "jwt_secret": os.getenv("JWT_SECRET", "dev-secret"),
         "jwt_algo": os.getenv("JWT_ALGO", "HS256"),
         "jwt_expiry_days": int(os.getenv("JWT_EXPIRY_DAYS", "30")),
-        "cookie_name": os.getenv("COOKIE_NAME", "loomline_token"),
+        "cookie_name": os.getenv("COOKIE_NAME", "FABRITRACK_token"),
         "backend_url": os.getenv("BACKEND_URL", "http://127.0.0.1:8000"),
     }

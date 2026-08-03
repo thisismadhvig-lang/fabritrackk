@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState } 
 import { api, getStoredToken, setStoredToken } from "@/lib/api";
 
 const AuthCtx = createContext(null);
-const DEFAULT_SETTINGS = { app_name: "LOOMLINE", tagline: "Manufacturing ERP" };
+const DEFAULT_SETTINGS = { app_name: "FABRITRACK", tagline: "Manufacturing ERP" };
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);

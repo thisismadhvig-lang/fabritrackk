@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { ChevronDown, Printer } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -52,7 +52,7 @@ export default function UniversalPrintButton({
       allRows: rows,
     });
     return preparedRows;
-  }, [mode, rows, selectedRows, selectedIds, currentPageRows, filteredRows]);
+  }, [mode, rows, selectedRows, activeSelectedIds, currentPageRows, filteredRows]);
 
   const allVisible = useMemo(() => rows.length > 0, [rows.length]);
   const selectedCount = selectedRows.length || activeSelectedIds.length;
@@ -132,6 +132,7 @@ export default function UniversalPrintButton({
         <DialogContent className="max-w-3xl">
           <DialogHeader>
             <DialogTitle className="text-lg font-semibold">Print Report</DialogTitle>
+            <DialogDescription className="sr-only">Choose the print scope, configure the export options, and review the selected rows.</DialogDescription>
           </DialogHeader>
 
           <div className="grid gap-4 md:grid-cols-[1.2fr_0.8fr]">

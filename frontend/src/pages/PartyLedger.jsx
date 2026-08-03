@@ -146,24 +146,6 @@ export default function PartyLedger() {
   const [seeding, setSeeding] = useState(false);
   const [selectedPrintIds, setSelectedPrintIds] = useState([]);
 
-  const loadParties = useCallback(async () => {
-    try {
-      const response = await api.get("/parties", { params: { include_archived: true } });
-      const list = response.data || [];
-      const typed = list.filter((item) => item.party_type && PARTY_TYPES.some((type) => type.value === item.party_type));
-      setParties(typed);
-      const selectedTypeItems = typed.filter((item) => item.party_type === partyType);
-      if (!selectedTypeItems.some((item) => item.id === partyId)) {
-        setPartyId(selectedTypeItems[0]?.id || "");
-      }
-      if (!typed.length) {
-        await seedDemoData();
-      }
-    } catch (error) {
-      console.error(error);
-    }
-  }, [partyId, partyType]);
-
   const seedDemoData = useCallback(async () => {
     try {
       setSeeding(true);
@@ -230,9 +212,23 @@ export default function PartyLedger() {
       console.error(error);
     } finally {
       setSeeding(false);
-      await loadParties();
     }
-  }, [loadParties]);
+  }, []);
+
+  const loadParties = useCallback(async () => {
+    try {
+      const response = await api.get("/parties", { params: { include_archived: true } });
+      const list = response.data || [];
+      const typed = list.filter((item) => item.party_type && PARTY_TYPES.some((type) => type.value === item.party_type));
+      setParties(typed);
+      const selectedTypeItems = typed.filter((item) => item.party_type === partyType);
+      if (!selectedTypeItems.some((item) => item.id === partyId)) {
+        setPartyId(selectedTypeItems[0]?.id || "");
+      }
+    } catch (error) {
+      console.error(error);
+    }
+  }, [partyId, partyType]);
 
   useEffect(() => {
     loadParties();

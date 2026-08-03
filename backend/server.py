@@ -8,6 +8,8 @@ import csv
 import json
 import logging
 import re
+import subprocess
+import tempfile
 import bcrypt
 import jwt
 from pathlib import Path
@@ -571,6 +573,17 @@ def _unpack_return_notes(raw_notes: str) -> Dict[str, Any]:
     }
 
 
+def _normalize_postgres_url(raw_url: str) -> str:
+    if not raw_url:
+        return raw_url
+    if raw_url.startswith("postgresql+"):
+        prefix, rest = raw_url.split("://", 1)
+        return f"postgresql://{rest}"
+    if raw_url.startswith("postgres://"):
+        return raw_url.replace("postgres://", "postgresql://", 1)
+    return raw_url
+
+
 def _serialize_row(model, row):
     if isinstance(row, UserORM):
         return {"id": row.id, "username": row.username, "password_hash": row.password_hash}
@@ -639,6 +652,7 @@ def _serialize_row(model, row):
             "order_id": row.order_id,
             "product_type_id": row.product_type_id,
             "kg_dispatched": row.kg_dispatched,
+            "expected_pieces": row.expected_pieces,
             "date": _dt_to_iso(row.date),
             "notes": row.notes,
             "archived": row.archived,
@@ -923,7 +937,7 @@ def create_token(username: str) -> str:
 
 
 async def get_current_user(request: Request) -> dict:
-    token = request.cookies.get("loomline_token")
+    token = request.cookies.get("FABRITRACK_token")
     if not token:
         auth = request.headers.get("Authorization", "")
         if auth.startswith("Bearer "):
@@ -945,7 +959,7 @@ async def get_current_user(request: Request) -> dict:
     return payload_user
 
 
-COOKIE_NAME = "loomline_token"
+COOKIE_NAME = "FABRITRACK_token"
 COOKIE_MAX_AGE = JWT_EXPIRY_DAYS * 24 * 60 * 60
 
 
@@ -990,7 +1004,7 @@ class ChangeUsernamePayload(BaseModel):
 
 # ============ APP SETTINGS ============
 class AppSettings(BaseModel):
-    app_name: str = "LOOMLINE"
+    app_name: str = "FABRITRACK"
     tagline: str = "Manufacturing ERP"
 
 
@@ -1107,6 +1121,7 @@ class FabricDispatch(BaseModel):
     order_id: Optional[str] = None
     product_type_id: Optional[str] = None
     kg_dispatched: float
+    expected_pieces: float = 0.0
     date: str = Field(default_factory=now_iso)
     notes: Optional[str] = ""
     archived: bool = False
@@ -1119,6 +1134,7 @@ class FabricDispatchCreate(BaseModel):
     order_id: Optional[str] = None
     product_type_id: Optional[str] = None
     kg_dispatched: float
+    expected_pieces: float = 0.0
     date: Optional[str] = None
     notes: Optional[str] = ""
 
@@ -3422,11 +3438,20 @@ async def create_fabric_dispatch(payload: FabricDispatchCreate):
     data = payload.model_dump()
     if not data.get("date"):
         data["date"] = now_iso()
+    expected_pieces = _coerce_number(data.get("expected_pieces"), 0.0)
+    if expected_pieces <= 0:
+        expected_pieces = _coerce_number(_normalize_dispatch_note_payload(data.get("notes") or "").get("expectedPieces") or _normalize_dispatch_note_payload(data.get("notes") or "").get("expected_pieces"), 0.0)
+    data["expected_pieces"] = expected_pieces
+    if data.get("notes"):
+        data["notes"] = _update_dispatch_note_payload(str(data.get("notes") or ""), expectedPieces=expected_pieces)
     obj = FabricDispatch(**data)
     created = await _create(store.fabric_dispatches, obj.model_dump())
     with SessionLocal() as session:
         dispatch_row = session.query(FabricDispatchORM).filter(FabricDispatchORM.id == created.get("id")).first()
         if dispatch_row is not None:
+            dispatch_row.expected_pieces = expected_pieces
+            if data.get("notes"):
+                dispatch_row.notes = data["notes"]
             vendor_name = ""
             if dispatch_row.vendor_id:
                 vendor = session.query(VendorORM).filter(VendorORM.id == dispatch_row.vendor_id).first()
@@ -3438,11 +3463,22 @@ async def create_fabric_dispatch(payload: FabricDispatchCreate):
 
 @api_router.patch("/fabric-dispatches/{item_id}", response_model=FabricDispatch)
 async def update_fabric_dispatch(item_id: str, updates: Dict[str, Any]):
+    next_expected_pieces = _coerce_number(updates.get("expected_pieces"), 0.0)
+    if next_expected_pieces <= 0 and "notes" in updates:
+        parsed_notes = _normalize_dispatch_note_payload(str(updates.get("notes") or ""))
+        next_expected_pieces = _coerce_number(parsed_notes.get("expectedPieces") or parsed_notes.get("expected_pieces"), 0.0)
+    if next_expected_pieces > 0:
+        updates = {**updates, "expected_pieces": next_expected_pieces}
+    if "notes" in updates and updates.get("notes") is not None:
+        updates = {**updates, "notes": _update_dispatch_note_payload(str(updates.get("notes") or ""), expectedPieces=next_expected_pieces)}
     updated = await _update(store.fabric_dispatches, item_id, updates,
-                         ["fabric_lot_id", "vendor_id", "order_id", "product_type_id", "kg_dispatched", "date", "notes"])
+                         ["fabric_lot_id", "vendor_id", "order_id", "product_type_id", "kg_dispatched", "expected_pieces", "date", "notes"])
     with SessionLocal() as session:
         dispatch_row = session.query(FabricDispatchORM).filter(FabricDispatchORM.id == item_id).first()
         if dispatch_row is not None:
+            dispatch_row.expected_pieces = _coerce_number(updated.get("expected_pieces"), 0.0)
+            if "notes" in updates:
+                dispatch_row.notes = updates["notes"]
             vendor_name = ""
             if dispatch_row.vendor_id:
                 vendor = session.query(VendorORM).filter(VendorORM.id == dispatch_row.vendor_id).first()
@@ -4300,6 +4336,8 @@ def _build_production_traceability_payload(
         unpacked = _unpack_return_notes(row.notes or "")
         dispatch_id = row.order_id or ""
         dispatch_payload = dispatch_lookup.get(dispatch_id, {})
+        return_expected_pieces = _coerce_number(unpacked.get("expected_pieces"), 0.0)
+        effective_expected_pieces = return_expected_pieces if return_expected_pieces > 0 else _coerce_number(dispatch_payload.get("expected_pieces") or 0, 0.0)
         return_payload = {
             "id": row.id,
             "dispatch_id": dispatch_id,
@@ -4310,7 +4348,8 @@ def _build_production_traceability_payload(
             "product_name": product_map.get(row.product_type_id, ""),
             "pieces_received": int(row.pieces_received or 0),
             "pieces_defected": int(row.pieces_defected or 0),
-            "pieces_left": round(max(_coerce_number(dispatch_payload.get("expected_pieces") or 0, 0.0) - float(row.pieces_received or 0), 0), 2),
+            "expected_pieces": round(effective_expected_pieces, 2),
+            "pieces_left": round(max(effective_expected_pieces - float(row.pieces_received or 0), 0), 2),
             "job_work_rate": round(_get_job_work_rate(row), 2),
             "job_work_amount": round(float(row.pieces_received or 0) * _get_job_work_rate(row), 2),
             "challan_no": unpacked.get("challan_no") or "",
@@ -4792,8 +4831,9 @@ def _build_fabric_dispatch_index(include_archived: bool = False) -> Dict[str, Di
     for row in dispatch_rows:
         parsed_notes = _parse_dispatch_note_blob(row.notes or "")
         dispatch_no = parsed_notes.get("dispatch_no") or row.id
-        expected_pieces = 0.0
-        avg_fabric_per_piece = 0.0
+        explicit_expected_pieces = _coerce_number(getattr(row, "expected_pieces", None), 0.0)
+        expected_pieces = explicit_expected_pieces if explicit_expected_pieces > 0 else _coerce_number(parsed_notes.get("expected_pieces") or parsed_notes.get("quantity") or 0, 0.0)
+        avg_fabric_per_piece = _coerce_number(parsed_notes.get("avg_fabric_per_piece"), 0.0)
         index[row.id] = {
             "id": row.id,
             "dispatch_id": row.id,
@@ -4826,6 +4866,8 @@ def _enrich_return_row(
     pieces_received = float(row.get("pieces_received") or 0)
     unpacked_notes = _unpack_return_notes(row.get("notes") or "")
     expected_pieces = _coerce_number(unpacked_notes.get("expected_pieces"), 0.0)
+    if expected_pieces <= 0:
+        expected_pieces = _coerce_number((dispatch or {}).get("expected_pieces"), 0.0)
     avg_fabric_per_piece = _coerce_number(unpacked_notes.get("avg_fabric_per_piece"), 0.0)
     row_id = str(row.get("id") or "")
     computed_left = pieces_left_by_row_id.get(row_id)
@@ -4944,6 +4986,34 @@ def _upsert_production_return_payable(session, return_row, vendor_name: str, ref
         existing_tx.notes = note_text
 
 
+def _resolve_capacity_expected_pieces(dispatch: Optional[Dict[str, Any]], expected_pieces_override: Optional[float] = None) -> float:
+    explicit = _coerce_number(expected_pieces_override, 0.0)
+    if explicit > 0:
+        return explicit
+    dispatch_expected = _coerce_number((dispatch or {}).get("expected_pieces"), 0.0)
+    if dispatch_expected > 0:
+        return dispatch_expected
+    dispatch_quantity = _coerce_number((dispatch or {}).get("kg_dispatched"), 0.0)
+    return dispatch_quantity if dispatch_quantity > 0 else 0.0
+
+
+def _resolve_dispatch_expected_pieces(dispatch: Optional[Dict[str, Any]], receipt_rows: Optional[List[Dict[str, Any]]] = None) -> float:
+    dispatch_expected = _coerce_number((dispatch or {}).get("expected_pieces"), 0.0)
+    if dispatch_expected > 0:
+        return dispatch_expected
+    if not receipt_rows:
+        return 0.0
+    receipt_expected_values = []
+    for row in receipt_rows:
+        unpacked_notes = _unpack_return_notes(row.get("notes") or "")
+        receipt_expected = _coerce_number(unpacked_notes.get("expected_pieces"), 0.0)
+        if receipt_expected > 0:
+            receipt_expected_values.append(receipt_expected)
+    if receipt_expected_values:
+        return max(receipt_expected_values)
+    return 0.0
+
+
 async def _assert_dispatch_receipt_capacity(
     dispatch_id: str,
     pieces_received: float,
@@ -4966,7 +5036,7 @@ async def _assert_dispatch_receipt_capacity(
         existing_rows = query.all()
     already_received = sum(float(row.pieces_received or 0) for row in existing_rows)
 
-    expected_pieces = _coerce_number(expected_pieces_override, 0.0)
+    expected_pieces = _resolve_capacity_expected_pieces(dispatch, expected_pieces_override)
 
     if expected_pieces > 0 and already_received + pieces_received > expected_pieces + 1e-9:
         available = max(expected_pieces - already_received, 0)
@@ -5006,7 +5076,10 @@ async def list_production_returns(include_archived: bool = False):
         if not dispatch_id:
             continue
         unpacked_notes = _unpack_return_notes(row.get("notes") or "")
+        dispatch = dispatch_index.get(dispatch_id)
         expected_pieces = _coerce_number(unpacked_notes.get("expected_pieces"), 0.0)
+        if expected_pieces <= 0:
+            expected_pieces = _resolve_capacity_expected_pieces(dispatch, 0.0)
         pieces_received = float(row.get("pieces_received") or 0)
         row_left = max(expected_pieces - pieces_received, 0) if expected_pieces > 0 else 0.0
         pieces_left_by_row_id[str(row.get("id") or "")] = row_left
@@ -5019,18 +5092,21 @@ async def list_return_dispatch_options():
     dispatch_index = _build_fabric_dispatch_index(include_archived=False)
     rows = await _list(store.production_returns, include_archived=False)
     received_by_dispatch: Dict[str, float] = {}
+    receipt_rows_by_dispatch: Dict[str, List[Dict[str, Any]]] = {}
     for row in rows:
         dispatch_id = row.get("dispatch_id") or row.get("order_id")
         if not dispatch_id:
             continue
         received_by_dispatch[dispatch_id] = received_by_dispatch.get(dispatch_id, 0) + float(row.get("pieces_received") or 0)
+        receipt_rows_by_dispatch.setdefault(dispatch_id, []).append(row)
 
     options = []
     for dispatch in dispatch_index.values():
-        expected_pieces = _coerce_number(dispatch.get("expected_pieces"), 0.0)
-        received_qty = float(received_by_dispatch.get(dispatch["id"], 0))
-        pieces_left = round(max(expected_pieces - received_qty, 0), 3) if expected_pieces > 0 else None
-        if expected_pieces > 0 and pieces_left <= 1e-9:
+        dispatch_id = dispatch["id"]
+        expected_pieces = _resolve_dispatch_expected_pieces(dispatch, receipt_rows_by_dispatch.get(dispatch_id, []))
+        received_qty = float(received_by_dispatch.get(dispatch_id, 0))
+        pieces_left = round(max(expected_pieces - received_qty, 0), 3) if expected_pieces > 0 else 0.0
+        if pieces_left <= 1e-9:
             continue
         options.append({
             **dispatch,
@@ -5049,12 +5125,9 @@ async def get_return_dispatch_details(dispatch_id: str):
         raise HTTPException(status_code=404, detail="Dispatch not found")
 
     rows = await _list(store.production_returns, include_archived=False)
-    received_total = sum(
-        float(row.get("pieces_received") or 0)
-        for row in rows
-        if (row.get("dispatch_id") or row.get("order_id")) == dispatch_id
-    )
-    expected_pieces = _coerce_number(dispatch.get("expected_pieces"), 0.0)
+    receipt_rows = [row for row in rows if (row.get("dispatch_id") or row.get("order_id")) == dispatch_id]
+    received_total = sum(float(row.get("pieces_received") or 0) for row in receipt_rows)
+    expected_pieces = _resolve_dispatch_expected_pieces(dispatch, receipt_rows)
     return {
         **dispatch,
         "pieces_received_total": round(received_total, 3),
@@ -5077,6 +5150,8 @@ async def create_production_return(payload: ProductionReturnCreate):
 
     expected_pieces = _coerce_number(data.get("expected_pieces"), 0.0)
     avg_fabric_per_piece = _coerce_number(data.get("avg_fabric_per_piece"), 0.0)
+    if expected_pieces <= 0 and _coerce_number(dispatch.get("expected_pieces"), 0.0) > 0:
+        expected_pieces = round(_coerce_number(dispatch.get("expected_pieces"), 0.0), 3)
     if expected_pieces <= 0 and avg_fabric_per_piece > 0 and dispatch.get("kg_dispatched"):
         expected_pieces = round(_coerce_number(dispatch.get("kg_dispatched"), 0.0) / avg_fabric_per_piece, 3)
 
@@ -5278,6 +5353,8 @@ async def update_production_return(item_id: str, updates: Dict[str, Any]):
 
     expected_pieces = _coerce_number(updates.get("expected_pieces") if "expected_pieces" in updates else unpacked_existing.get("expected_pieces"), 0.0)
     avg_fabric_per_piece = _coerce_number(updates.get("avg_fabric_per_piece") if "avg_fabric_per_piece" in updates else unpacked_existing.get("avg_fabric_per_piece"), 0.0)
+    if expected_pieces <= 0 and _coerce_number(dispatch.get("expected_pieces"), 0.0) > 0:
+        expected_pieces = round(_coerce_number(dispatch.get("expected_pieces"), 0.0), 3)
     if expected_pieces <= 0 and avg_fabric_per_piece > 0 and dispatch.get("kg_dispatched"):
         expected_pieces = round(_coerce_number(dispatch.get("kg_dispatched"), 0.0) / avg_fabric_per_piece, 3)
 
@@ -5354,7 +5431,7 @@ async def update_production_return(item_id: str, updates: Dict[str, Any]):
     updated["challan_no"] = unpacked_notes["challan_no"]
     updated["lot_no"] = unpacked_notes["lot_no"]
     updated["article_barcode"] = unpacked_notes["article_barcode"]
-    updated["expected_pieces"] = round(_coerce_number(unpacked_notes.get("expected_pieces"), 0.0), 3)
+    updated["expected_pieces"] = round(expected_pieces, 3)
     updated["avg_fabric_per_piece"] = round(_coerce_number(unpacked_notes.get("avg_fabric_per_piece"), 0.0), 3)
     updated["fabric_still_lying_kg"] = round(_coerce_number(unpacked_notes.get("fabric_still_lying_kg"), 0.0), 3)
     updated["job_work_rate_per_piece"] = round(job_work_rate, 2)
@@ -5702,6 +5779,111 @@ async def logout(response: Response):
     return {"ok": True}
 
 
+@api_router.post("/backup")
+async def backup_database(user: dict = Depends(get_current_user)):
+    database_url = os.environ.get("DATABASE_URL")
+    if not database_url:
+        raise HTTPException(status_code=500, detail="DATABASE_URL is not configured")
+
+    normalized_url = _normalize_postgres_url(database_url)
+    if normalized_url != database_url:
+        logger.info("Normalizing DATABASE_URL for pg_dump: %s -> %s", database_url, normalized_url)
+
+    try:
+        subprocess.run(["pg_dump", "--version"], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except Exception as exc:
+        logger.exception("pg_dump is not available")
+        raise HTTPException(status_code=500, detail=f"PostgreSQL client tools are not available: {exc}") from exc
+
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
+    filename = f"FABRITRACK_Backup_{timestamp}.sql"
+    temp_file = tempfile.NamedTemporaryFile("wb", delete=False, suffix=".sql")
+    temp_path = temp_file.name
+    temp_file.close()
+
+    logger.info("Starting backup with filename=%s and database_url=%s", filename, normalized_url)
+
+    try:
+        with open(temp_path, "wb") as handle:
+            completed = subprocess.run(
+                ["pg_dump", normalized_url, "--format=plain", "--no-owner", "--no-privileges"],
+                stdout=handle,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+        if completed.returncode != 0:
+            stderr = completed.stderr.decode("utf-8", errors="ignore").strip()
+            logger.exception("pg_dump failed: %s", stderr or "pg_dump exited with a non-zero status")
+            raise HTTPException(status_code=500, detail=stderr or f"pg_dump exited with code {completed.returncode}")
+
+        if not os.path.exists(temp_path) or os.path.getsize(temp_path) == 0:
+            raise HTTPException(status_code=500, detail="Backup file was not created")
+
+        with open(temp_path, "rb") as handle:
+            content = handle.read()
+
+        logger.info("Backup completed successfully: filename=%s size=%s", filename, len(content))
+        return Response(
+            content=content,
+            media_type="application/sql",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Unexpected backup error")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+
+@api_router.post("/restore")
+async def restore_database(file: UploadFile = File(...), user: dict = Depends(get_current_user)):
+    if not file.filename or not file.filename.lower().endswith(".sql"):
+        raise HTTPException(status_code=400, detail="Please upload a .sql backup file")
+
+    database_url = os.environ.get("DATABASE_URL")
+    if not database_url:
+        raise HTTPException(status_code=500, detail="DATABASE_URL is not configured")
+
+    normalized_url = _normalize_postgres_url(database_url)
+
+    try:
+        subprocess.run(["psql", "--version"], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except Exception as exc:
+        logger.exception("psql is not available")
+        raise HTTPException(status_code=500, detail=f"PostgreSQL client tools are not available: {exc}") from exc
+
+    temp_file = tempfile.NamedTemporaryFile("wb", delete=False, suffix=".sql")
+    temp_path = temp_file.name
+    temp_file.write(await file.read())
+    temp_file.close()
+
+    try:
+        with open(temp_path, "rb") as handle:
+            completed = subprocess.run(
+                ["psql", normalized_url, "--set", "ON_ERROR_STOP=1", "--single-transaction"],
+                stdin=handle,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+        if completed.returncode != 0:
+            stderr = completed.stderr.decode("utf-8", errors="ignore").strip()
+            logger.exception("psql restore failed: %s", stderr or "psql exited with a non-zero status")
+            raise HTTPException(status_code=500, detail=stderr or f"psql exited with code {completed.returncode}")
+        return {"ok": True, "message": "Database restored successfully"}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Unexpected restore error")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+
 @api_router.get("/auth/me")
 async def me(user: dict = Depends(get_current_user)):
     return {"username": user["username"]}
@@ -5756,14 +5938,14 @@ async def _get_settings() -> dict:
     with SessionLocal() as session:
         doc = session.query(AppSettingORM).filter(AppSettingORM.key == "app").first()
     if doc is None:
-        default = {"key": "app", "app_name": "LOOMLINE", "tagline": "Manufacturing ERP", "customization_data": "{}"}
+        default = {"key": "app", "app_name": "FABRITRACK", "tagline": "Manufacturing ERP", "customization_data": "{}"}
         await _create(store.app_settings, default)
         doc = default
     if isinstance(doc, dict):
         customization = _parse_customization_payload(doc.get("customization_data", "{}"))
-        return {"app_name": doc.get("app_name", "LOOMLINE"), "tagline": doc.get("tagline", "Manufacturing ERP"), "customization": customization, "customization_data": json.dumps(customization)}
+        return {"app_name": doc.get("app_name", "FABRITRACK"), "tagline": doc.get("tagline", "Manufacturing ERP"), "customization": customization, "customization_data": json.dumps(customization)}
     customization = _parse_customization_payload(getattr(doc, "customization_data", "{}"))
-    return {"app_name": getattr(doc, "app_name", "LOOMLINE"), "tagline": getattr(doc, "tagline", "Manufacturing ERP"), "customization": customization, "customization_data": json.dumps(customization)}
+    return {"app_name": getattr(doc, "app_name", "FABRITRACK"), "tagline": getattr(doc, "tagline", "Manufacturing ERP"), "customization": customization, "customization_data": json.dumps(customization)}
 
 
 @api_router.get("/settings")
@@ -5779,7 +5961,7 @@ async def update_settings(payload: AppSettingsUpdate, user: dict = Depends(get_c
     with SessionLocal() as session:
         row = session.query(AppSettingORM).filter(AppSettingORM.key == "app").first()
         if row is None:
-            row = AppSettingORM(key="app", app_name="LOOMLINE", tagline="Manufacturing ERP", customization_data="{}")
+            row = AppSettingORM(key="app", app_name="FABRITRACK", tagline="Manufacturing ERP", customization_data="{}")
             session.add(row)
         for key, value in updates.items():
             if key == "app_name":
@@ -5806,7 +5988,7 @@ async def update_customization_settings(payload: Dict[str, Any], user: dict = De
     with SessionLocal() as session:
         row = session.query(AppSettingORM).filter(AppSettingORM.key == "app").first()
         if row is None:
-            row = AppSettingORM(key="app", app_name="LOOMLINE", tagline="Manufacturing ERP", customization_data="{}")
+            row = AppSettingORM(key="app", app_name="FABRITRACK", tagline="Manufacturing ERP", customization_data="{}")
             session.add(row)
         row.customization_data = json.dumps(body)
         session.commit()

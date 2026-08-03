@@ -76,7 +76,7 @@ def create_token(username: str) -> str:
 
 
 async def get_current_user(request: Request) -> dict:
-    token = request.cookies.get("loomline_token")
+    token = request.cookies.get("FABRITRACK_token")
     if not token:
         auth = request.headers.get("Authorization", "")
         if auth.startswith("Bearer "):
@@ -95,7 +95,7 @@ async def get_current_user(request: Request) -> dict:
     return user
 
 
-COOKIE_NAME = "loomline_token"
+COOKIE_NAME = "FABRITRACK_token"
 COOKIE_MAX_AGE = JWT_EXPIRY_DAYS * 24 * 60 * 60
 
 
@@ -138,7 +138,7 @@ class ChangeUsernamePayload(BaseModel):
 
 # ============ APP SETTINGS ============
 class AppSettings(BaseModel):
-    app_name: str = "LOOMLINE"
+    app_name: str = "FABRITRACK"
     tagline: str = "Manufacturing ERP"
 
 
@@ -779,10 +779,10 @@ async def change_username(
 async def _get_settings() -> dict:
     doc = await db.app_settings.find_one({"key": "app"}, {"_id": 0})
     if not doc:
-        default = {"key": "app", "app_name": "LOOMLINE", "tagline": "Manufacturing ERP"}
+        default = {"key": "app", "app_name": "FABRITRACK", "tagline": "Manufacturing ERP"}
         await db.app_settings.insert_one(default)
         doc = default
-    return {"app_name": doc.get("app_name", "LOOMLINE"), "tagline": doc.get("tagline", "Manufacturing ERP")}
+    return {"app_name": doc.get("app_name", "FABRITRACK"), "tagline": doc.get("tagline", "Manufacturing ERP")}
 
 
 @api_router.get("/settings")

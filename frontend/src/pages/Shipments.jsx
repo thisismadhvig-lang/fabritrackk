@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { API, api, fmtDate, fmtNum } from "@/lib/api";
 import PageHeader from "@/components/PageHeader";
@@ -52,34 +52,34 @@ export default function Shipments() {
   const [form, setForm] = useState(makeEmptyForm());
   const [selectedPrintIds, setSelectedPrintIds] = useState([]);
 
-  const loadOrders = async () => {
+  const loadOrders = useCallback(async () => {
     try {
       const response = await api.get("/orders", { params: { include_archived: true } });
       setOrders(response.data || []);
     } catch (error) {
       console.error(error);
     }
-  };
+  }, []);
 
-  const loadBuyers = async () => {
+  const loadBuyers = useCallback(async () => {
     try {
       const response = await api.get("/buyers", { params: { include_archived: true } });
       setBuyers(response.data || []);
     } catch (error) {
       console.error(error);
     }
-  };
+  }, []);
 
-  const loadWarehouse = async () => {
+  const loadWarehouse = useCallback(async () => {
     try {
       const response = await api.get("/warehouse");
       setWarehouseItems(response.data?.items || []);
     } catch (error) {
       console.error(error);
     }
-  };
+  }, []);
 
-  const loadShipments = async (query = "") => {
+  const loadShipments = useCallback(async (query = "") => {
     setLoading(true);
     try {
       const response = await api.get("/shipments", { params: { search: query || undefined } });
@@ -90,21 +90,23 @@ export default function Shipments() {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     loadOrders();
     loadBuyers();
     loadWarehouse();
     loadShipments(search);
-  }, []);
+  }, [loadOrders, loadBuyers, loadWarehouse, loadShipments, search]);
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     const timeout = window.setTimeout(() => {
       loadShipments(search);
     }, 250);
     return () => window.clearTimeout(timeout);
-  }, [search]);
+  }, [loadShipments, search]);
 
   const selectedOrder = useMemo(() => {
     return orders.find((order) => order.id === form.order_id || order.order_number === form.order_number) || null;

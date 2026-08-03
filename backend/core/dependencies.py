@@ -24,7 +24,7 @@ def get_db() -> Generator[Session, None, None]:
 
 
 async def get_current_user(request: Request, db: Session = Depends(get_db)) -> Dict[str, Any]:
-    token = request.cookies.get("loomline_token")
+    token = request.cookies.get("FABRITRACK_token")
     if not token:
         auth_header = request.headers.get("Authorization", "")
         if auth_header.startswith("Bearer "):
